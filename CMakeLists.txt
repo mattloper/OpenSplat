@@ -241,6 +241,9 @@ endif()
 
 add_executable(opensplat ${OPENSPLAT_SRC_FILES})
 
+# Add rpath directly to the linker options for this target
+target_link_options(opensplat PRIVATE "-Wl,-rpath,/usr/local/lib")
+
 install(TARGETS opensplat DESTINATION bin)
 set_property(TARGET opensplat PROPERTY CXX_STANDARD 17)
 target_include_directories(opensplat PRIVATE
