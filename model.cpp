@@ -775,3 +775,35 @@ torch::Tensor Model::mainLoss(torch::Tensor &rgb, torch::Tensor &gt, float ssimW
     torch::Tensor l1Loss = l1(rgb, gt);
     return (1.0f - ssimWeight) * l1Loss + ssimWeight * ssimLoss;
 }
+
+// Compute loss with per-channel gain (diagonal) colour correction. No bias, no mixing.
+torch::Tensor Model::colorInvariantLoss(torch::Tensor &rgb, torch::Tensor &gt, float ssimWeight){
+    // Flatten
+    torch::Tensor R_flat = rgb.reshape({-1, 3});
+    torch::Tensor G_flat = gt.reshape({-1, 3});
+
+    const double eps = 1e-6;
+    torch::Tensor gains;
+    {
+        torch::NoGradGuard guard; // robust gain has no gradients
+        torch::Tensor ratio = R_flat.detach() / (G_flat.detach() + eps); // N×3
+        auto median_res = ratio.median(0, /*keepdim=*/false);
+        torch::Tensor gainsVal = std::get<0>(median_res); // 3
+        gains = gainsVal.to(rgb.device());
+    }
+    // Ensure gains is a leaf tensor without grad
+    gains = gains.detach();
+
+    // Apply gains
+    torch::Tensor G_aligned = gt * gains.view({1,1,3});
+
+    // Loss
+    torch::Tensor ssimLoss = 1.0f - ssim.eval(rgb, G_aligned);
+    torch::Tensor l1Loss = l1(rgb, G_aligned);
+
+    // Regularise gains toward 1
+    const float lambda = 0.5f;
+    torch::Tensor reg = (gains - 1).pow(2).mean();
+
+    return (1.0f - ssimWeight) * l1Loss + ssimWeight * ssimLoss + lambda * reg;
+}
