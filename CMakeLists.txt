@@ -270,6 +270,37 @@ elseif(GPU_RUNTIME STREQUAL "MPS")
     target_compile_definitions(opensplat PRIVATE USE_MPS)
 endif()
 
+# --- Add opensplat-render executable ---
+set(OPENSPLAT_RENDER_SRC_FILES opensplat-render.cpp pose_utils.cpp point_io.cpp nerfstudio.cpp model.cpp
+kdtree_tensor.cpp spherical_harmonics.cpp cv_utils.cpp utils.cpp project_gaussians.cpp
+rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
+tensor_math.cpp)
+
+add_executable(opensplat-render ${OPENSPLAT_RENDER_SRC_FILES})
+install(TARGETS opensplat-render DESTINATION bin)
+set_property(TARGET opensplat-render PROPERTY CXX_STANDARD 17)
+target_include_directories(opensplat-render PRIVATE
+    ${PROJECT_SOURCE_DIR}/rasterizer
+    ${GPU_INCLUDE_DIRS}
+)
+target_link_libraries(opensplat-render PUBLIC ${STDPPFS_LIBRARY} ${GPU_LIBRARIES} ${GSPLAT_LIBS} ${TORCH_LIBRARIES} ${OpenCV_LIBS})
+target_link_libraries(opensplat-render PRIVATE
+    nlohmann_json::nlohmann_json
+    cxxopts::cxxopts
+    nanoflann::nanoflann
+)
+if (NOT WIN32)
+    target_link_libraries(opensplat-render PUBLIC pthread)
+endif()
+if(GPU_RUNTIME STREQUAL "HIP")
+    target_compile_definitions(opensplat-render PRIVATE USE_HIP __HIP_PLATFORM_AMD__)
+elseif(GPU_RUNTIME STREQUAL "CUDA")
+    target_compile_definitions(opensplat-render PRIVATE USE_CUDA)
+elseif(GPU_RUNTIME STREQUAL "MPS")
+    target_compile_definitions(opensplat-render PRIVATE USE_MPS)
+endif()
+# --- End opensplat-render executable ---
+
 if(OPENSPLAT_BUILD_SIMPLE_TRAINER)
     add_executable(simple_trainer simple_trainer.cpp project_gaussians.cpp rasterize_gaussians.cpp cv_utils.cpp)
     install(TARGETS simple_trainer DESTINATION bin)
