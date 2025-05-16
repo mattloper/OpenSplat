@@ -511,20 +511,22 @@ int main(int argc, char *argv[]) {
         std::cout << "\\nStep 4: Aligning coordinate systems (if needed)...\\" << std::endl;
         torch::Tensor transform_b_to_a_matrix = torch::eye(4, torch::TensorOptions().device(device).dtype(torch::kFloat32)); 
         
-        if (view_colmap_path != splat_colmap_path) {
-            AlignmentResult align_result = calculate_alignment_transform(cameras_a, cameras_b, device);
-            if (align_result.success) {
-                transform_b_to_a_matrix.index_put_({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)}, align_result.s * align_result.R);
-                transform_b_to_a_matrix.index_put_({torch::indexing::Slice(0, 3), 3}, align_result.t);
-                std::cout << "Computed alignment transform from colmap_B to colmap_A." << std::endl;
-                std::cout << "Alignment common cameras: " << align_result.common_cameras_count << std::endl;
-                std::cout << "Alignment Scale: " << align_result.s << std::endl;
-            } else {
-                std::cerr << "Warning: Alignment failed. Using identity transform. Renderings might be misaligned if coordinate systems differ." << std::endl;
-            }
+        // Always calculate transform for testing purposes, even if paths are the same.
+        // if (view_colmap_path != splat_colmap_path) { 
+        AlignmentResult align_result = calculate_alignment_transform(cameras_a, cameras_b, device);
+        if (align_result.success) {
+            transform_b_to_a_matrix.index_put_({torch::indexing::Slice(0, 3), torch::indexing::Slice(0, 3)}, align_result.s * align_result.R);
+            transform_b_to_a_matrix.index_put_({torch::indexing::Slice(0, 3), 3}, align_result.t);
+            std::cout << "Computed alignment transform from colmap_B to colmap_A." << std::endl;
+            std::cout << "Alignment common cameras: " << align_result.common_cameras_count << std::endl;
+            std::cout << "Alignment Scale: " << align_result.s << std::endl;
         } else {
-            std::cout << "colmap_A and colmap_B are the same, no alignment transform needed.\\" << std::endl;
+            std::cerr << "Warning: Alignment calculation reported failure. Using identity transform. Renderings might be misaligned if coordinate systems differ." << std::endl;
+            // transform_b_to_a_matrix remains identity if align_result.success is false
         }
+        // } else {
+        //     std::cout << "colmap_A and colmap_B are the same, no alignment transform needed.\\" << std::endl;
+        // }
         std::cout << "\\nFinal Transform_B_to_A matrix being used:\n" << transform_b_to_a_matrix << std::endl;
 
         std::cout << "\\nStep 5: Rendering...\\" << std::endl;
