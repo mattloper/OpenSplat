@@ -2,6 +2,12 @@
 #include <nlohmann/json.hpp>
 #include "input_data.hpp"
 #include "cv_utils.hpp"
+#include "utils.hpp"
+#include <opencv2/opencv.hpp>
+#include <torch/torch.h>
+#include <fstream>
+#include <iostream>
+#include <limits>
 
 namespace fs = std::filesystem;
 using namespace torch::indexing;
@@ -197,4 +203,72 @@ void InputData::saveCameras(const std::string &filename, bool keepCrs){
     of.close();
 
     std::cout << "Wrote " << filename << std::endl;
+}
+
+void Camera::loadMask(const std::string &mask_source_path,
+                      bool is_global_mask_mode,
+                      const cv::Mat &global_mask_cv_mat){
+    // Clear any existing cache
+    maskPyramids.clear();
+    maskSourceCV.release();
+    has_mask = false;
+
+    cv::Mat mask_cv;
+    if (is_global_mask_mode){
+        if (!global_mask_cv_mat.empty()){
+            mask_cv = global_mask_cv_mat.clone();
+        }
+    } else {
+        if (!mask_source_path.empty()){
+            fs::path mask_dir = mask_source_path;
+            fs::path image_basename = fs::path(this->filePath).stem();
+            const std::vector<std::string> exts = {".png", ".jpg", ".jpeg", ".bmp", ".tiff"};
+            for (const auto &ext : exts){
+                fs::path candidate = mask_dir / (image_basename.string() + ext);
+                if (fs::exists(candidate) && fs::is_regular_file(candidate)){
+                    mask_cv = cv::imread(candidate.string(), cv::IMREAD_GRAYSCALE);
+                    if (!mask_cv.empty()) break;
+                }
+            }
+        }
+    }
+
+    if (!mask_cv.empty()){
+        has_mask = true;
+        maskSourceCV = mask_cv; // store full-res copy
+    }
+}
+
+torch::Tensor Camera::mask(int downscaleFactor, const torch::Device &device){
+    // Ensure image pyramid exists to know target dims
+    torch::Tensor img = getImage(downscaleFactor);
+    const int h = img.size(0);
+    const int w = img.size(1);
+
+    if (!has_mask){
+        return torch::ones({h, w, 1}, torch::TensorOptions().dtype(torch::kUInt8).device(device));
+    }
+
+    if (maskPyramids.find(downscaleFactor) != maskPyramids.end()){
+        return maskPyramids[downscaleFactor].to(device);
+    }
+
+    // Build resized mask tensor from source
+    cv::Mat resized;
+    if (maskSourceCV.rows != h || maskSourceCV.cols != w){
+        cv::resize(maskSourceCV, resized, cv::Size(w, h), 0, 0, cv::INTER_NEAREST);
+    } else {
+        resized = maskSourceCV;
+    }
+
+    torch::Tensor mask_tensor = torch::from_blob(resized.data, {h, w, 1}, torch::kByte).clone();
+    maskPyramids[downscaleFactor] = mask_tensor; // cache (CPU tensor)
+    return mask_tensor.to(device);
+}
+
+torch::Tensor Camera::maskedImage(int downscaleFactor, const torch::Device &device){
+    torch::Tensor img = getImage(downscaleFactor).to(device);
+    torch::Tensor m = mask(downscaleFactor, device).to(torch::kBool);
+    m = m.expand({img.size(0), img.size(1), 3});
+    return img.masked_fill(~m, std::numeric_limits<float>::quiet_NaN());
 }

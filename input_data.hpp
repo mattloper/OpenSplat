@@ -44,6 +44,24 @@ struct Camera{
     torch::Tensor image;
 
     std::unordered_map<int, torch::Tensor> imagePyramids;
+
+    bool has_mask = false;
+
+    // Mask cache: downscaleFactor -> uint8 mask tensor (H×W×1)
+    std::unordered_map<int, torch::Tensor> maskPyramids;
+    // Full-resolution mask image (CV_8U 1-ch); empty if no mask
+    cv::Mat maskSourceCV;
+
+    // Load mask information (once at startup)
+    void loadMask(const std::string &mask_source_path,
+                  bool is_global_mask_mode,
+                  const cv::Mat &global_mask_cv_mat);
+
+    // Return mask tensor at requested downscale (uint8, 1-channel)
+    torch::Tensor mask(int downscaleFactor, const torch::Device &device);
+
+    // Return GT image with masked pixels set to NaN (float32, H×W×3)
+    torch::Tensor maskedImage(int downscaleFactor, const torch::Device &device);
 };
 
 struct Points{
