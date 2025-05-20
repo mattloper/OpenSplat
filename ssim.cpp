@@ -2,7 +2,6 @@
 // MIT
 
 #include "ssim.hpp"
-#include "nanmean.hpp"
 
 using namespace torch::indexing;
 
@@ -29,8 +28,8 @@ torch::Tensor SSIM::eval(const torch::Tensor& rendered, const torch::Tensor& gt)
 
     torch::Tensor ssimMap = ((2.0f * mu1mu2 + C1) * (2.0f * sigma12 + C2)) / ((mu1Sq + mu2Sq + C1) * (sigma1Sq + sigma2Sq + C2));
 
-    // Always Nan-aware mean
-    return custom_ops::nanmean(ssimMap.to(torch::kFloat32));
+    // Standard mean now sufficient
+    return ssimMap.to(torch::kFloat32).mean();
 }
 
 torch::Tensor SSIM::createWindow(){

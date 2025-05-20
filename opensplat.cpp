@@ -45,7 +45,7 @@ int main(int argc, char *argv[]){
         ("split-screen-size", "Split gaussians that are larger than this percentage of screen space", cxxopts::value<float>()->default_value("0.05"))
         ("colmap-image-path", "Override the default image path for COLMAP-based input", cxxopts::value<std::string>()->default_value(""))
         ("color-invariant", "Apply colour-invariant loss to ALL images")
-        ("mask", "Path to mask source (file for global mask, directory for per-image masks)", cxxopts::value<std::string>()->default_value(""))
+        ("fgmask", "Path to foreground mask source (file for global mask, directory for per-image masks)", cxxopts::value<std::string>()->default_value(""))
 
         ("h,help", "Print usage")
         ("version", "Print version")
@@ -97,29 +97,6 @@ int main(int argc, char *argv[]){
     const float splitScreenSize = result["split-screen-size"].as<float>();
     const std::string colmapImageSourcePath = result["colmap-image-path"].as<std::string>();
     const bool invariantMode = result.count("color-invariant") > 0;
-    const std::string mask_source_path = result["mask"].as<std::string>();
-    bool is_mask_path_provided = !mask_source_path.empty();
-    bool is_global_mask_mode = false;
-    cv::Mat global_mask_cv_mat;
-
-    if (is_mask_path_provided) {
-        if (fs::is_regular_file(mask_source_path)) {
-            global_mask_cv_mat = cv::imread(mask_source_path, cv::IMREAD_GRAYSCALE);
-            if (global_mask_cv_mat.empty()) {
-                std::cerr << "Error: Global mask file could not be loaded: " << mask_source_path << std::endl;
-                return EXIT_FAILURE;
-            } else {
-                is_global_mask_mode = true;
-                std::cout << "Using global mask from: " << mask_source_path << std::endl;
-            }
-        } else if (fs::is_directory(mask_source_path)) {
-            is_global_mask_mode = false;
-            std::cout << "Using per-image masks from directory: " << mask_source_path << std::endl;
-        } else {
-            std::cerr << "Error: Mask path is not a valid file or directory: " << mask_source_path << std::endl;
-            return EXIT_FAILURE;
-        }
-    }
 
     torch::Device device = torch::kCPU;
     int displayStep = 10;
@@ -145,9 +122,6 @@ int main(int argc, char *argv[]){
 
         parallel_for(inputData.cameras.begin(), inputData.cameras.end(), [&](Camera &cam){
             cam.loadImage(downScaleFactor);
-            if (is_mask_path_provided) {
-                cam.loadMask(mask_source_path, is_global_mask_mode, global_mask_cv_mat);
-            }
         });
 
         // Withhold a validation camera if necessary
@@ -183,22 +157,21 @@ int main(int argc, char *argv[]){
             Camera& cam = cams[ camsIter.next() ];
 
             float current_gt_downscale_factor = model.getDownscaleFactor(step);
-            torch::Tensor gt_nan = cam.maskedImage(current_gt_downscale_factor, device);
             torch::Tensor gt_original_no_nan = cam.getImage(current_gt_downscale_factor).to(device);
+            torch::Tensor gt = gt_original_no_nan;
 
             model.optimizersZeroGrad();
  
             torch::Tensor rgb = model.forward(cam, step);
-            torch::Tensor gt = gt_original_no_nan;
 
             // Compute both variants once
             torch::Tensor lossToBackprop;
             torch::Tensor invLoss;
             if (invariantMode){
-                invLoss = model.colorInvariantLoss(rgb, gt_nan, ssimWeight);
+                invLoss = model.colorInvariantLoss(rgb, gt, ssimWeight);
                 lossToBackprop = invLoss;
             } else {
-                lossToBackprop = model.mainLoss(rgb, gt_nan, ssimWeight);
+                lossToBackprop = model.mainLoss(rgb, gt, ssimWeight);
             }
 
             lossToBackprop.backward();
@@ -268,7 +241,7 @@ int main(int argc, char *argv[]){
             // Prepare masks for validation camera
             float val_downscale = model.getDownscaleFactor(numIters);
             torch::Tensor rgb = model.forward(*valCam, numIters);
-            torch::Tensor gt = valCam->maskedImage(val_downscale, device);
+            torch::Tensor gt = valCam->getImage(val_downscale).to(device);
             float valLoss = invariantMode
                 ? model.colorInvariantLoss(rgb, 
                                            gt, 

@@ -226,7 +226,7 @@ target_include_directories(gsplat_cpu PRIVATE ${TORCH_INCLUDE_DIRS})
 
 set(OPENSPLAT_SRC_FILES opensplat.cpp point_io.cpp nerfstudio.cpp model.cpp
 kdtree_tensor.cpp spherical_harmonics.cpp cv_utils.cpp utils.cpp project_gaussians.cpp
-rasterize_gaussians.cpp ssim.cpp nanmean.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
+rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
 tensor_math.cpp)
 
 if (OPENSPLAT_BUILD_VISUALIZER)
@@ -273,7 +273,7 @@ endif()
 # --- Add opensplat-render executable ---
 set(OPENSPLAT_RENDER_SRC_FILES opensplat-render.cpp pose_utils.cpp point_io.cpp nerfstudio.cpp model.cpp
 kdtree_tensor.cpp spherical_harmonics.cpp cv_utils.cpp utils.cpp project_gaussians.cpp
-rasterize_gaussians.cpp ssim.cpp nanmean.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
+rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
 tensor_math.cpp)
 
 add_executable(opensplat-render ${OPENSPLAT_RENDER_SRC_FILES})

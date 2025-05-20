@@ -8,7 +8,6 @@
 #include "gsplat.hpp"
 #include "utils.hpp"
 #include <vector>
-#include "nanmean.hpp"
 
 #ifdef USE_HIP
 #include <c10/hip/HIPCachingAllocator.h>
@@ -50,7 +49,7 @@ torch::Tensor psnr(const torch::Tensor& rendered, const torch::Tensor& gt){
 }
 
 torch::Tensor l1(const torch::Tensor& rendered, const torch::Tensor& gt){
-    return custom_ops::nanmean(torch::abs(gt - rendered));
+    return torch::abs(gt - rendered).mean();
 }
 
 void Model::setupOptimizers(){
