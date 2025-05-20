@@ -112,8 +112,12 @@ if(GPU_RUNTIME STREQUAL "CUDA")
             message("Set CUDA flags: " ${CMAKE_CUDA_FLAGS})
         endif()
         # Set torch cuda architecture list
-        set(TORCH_CUDA_ARCH_LIST ${CMAKE_CUDA_ARCHITECTURES})
-        list(TRANSFORM TORCH_CUDA_ARCH_LIST REPLACE "([0-9])([0-9])" "\\1.\\2")
+        set(TORCH_CUDA_ARCH_LIST "")
+        foreach(_arch ${CMAKE_CUDA_ARCHITECTURES})
+            # Capture all leading digits as major and the final digit as minor.
+            string(REGEX REPLACE "([0-9]+)([0-9])$" "\\1.\\2" _dotted "${_arch}")
+            list(APPEND TORCH_CUDA_ARCH_LIST "${_dotted}")
+        endforeach()
         string(REPLACE ";" " " TORCH_CUDA_ARCH_LIST "${TORCH_CUDA_ARCH_LIST}")
         message(STATUS "** Updated TORCH_CUDA_ARCH_LIST to ${TORCH_CUDA_ARCH_LIST} **")
     endif()
@@ -222,7 +226,7 @@ target_include_directories(gsplat_cpu PRIVATE ${TORCH_INCLUDE_DIRS})
 
 set(OPENSPLAT_SRC_FILES opensplat.cpp point_io.cpp nerfstudio.cpp model.cpp
 kdtree_tensor.cpp spherical_harmonics.cpp cv_utils.cpp utils.cpp project_gaussians.cpp
-rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
+rasterize_gaussians.cpp ssim.cpp nanmean.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
 tensor_math.cpp)
 
 if (OPENSPLAT_BUILD_VISUALIZER)
@@ -236,6 +240,9 @@ if (OPENSPLAT_BUILD_VISUALIZER)
 endif()
 
 add_executable(opensplat ${OPENSPLAT_SRC_FILES})
+
+# Add rpath directly to the linker options for this target
+target_link_options(opensplat PRIVATE "-Wl,-rpath,/usr/local/lib")
 
 install(TARGETS opensplat DESTINATION bin)
 set_property(TARGET opensplat PROPERTY CXX_STANDARD 17)
@@ -262,6 +269,37 @@ elseif(GPU_RUNTIME STREQUAL "CUDA")
 elseif(GPU_RUNTIME STREQUAL "MPS")
     target_compile_definitions(opensplat PRIVATE USE_MPS)
 endif()
+
+# --- Add opensplat-render executable ---
+set(OPENSPLAT_RENDER_SRC_FILES opensplat-render.cpp pose_utils.cpp point_io.cpp nerfstudio.cpp model.cpp
+kdtree_tensor.cpp spherical_harmonics.cpp cv_utils.cpp utils.cpp project_gaussians.cpp
+rasterize_gaussians.cpp ssim.cpp nanmean.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
+tensor_math.cpp)
+
+add_executable(opensplat-render ${OPENSPLAT_RENDER_SRC_FILES})
+install(TARGETS opensplat-render DESTINATION bin)
+set_property(TARGET opensplat-render PROPERTY CXX_STANDARD 17)
+target_include_directories(opensplat-render PRIVATE
+    ${PROJECT_SOURCE_DIR}/rasterizer
+    ${GPU_INCLUDE_DIRS}
+)
+target_link_libraries(opensplat-render PUBLIC ${STDPPFS_LIBRARY} ${GPU_LIBRARIES} ${GSPLAT_LIBS} ${TORCH_LIBRARIES} ${OpenCV_LIBS})
+target_link_libraries(opensplat-render PRIVATE
+    nlohmann_json::nlohmann_json
+    cxxopts::cxxopts
+    nanoflann::nanoflann
+)
+if (NOT WIN32)
+    target_link_libraries(opensplat-render PUBLIC pthread)
+endif()
+if(GPU_RUNTIME STREQUAL "HIP")
+    target_compile_definitions(opensplat-render PRIVATE USE_HIP __HIP_PLATFORM_AMD__)
+elseif(GPU_RUNTIME STREQUAL "CUDA")
+    target_compile_definitions(opensplat-render PRIVATE USE_CUDA)
+elseif(GPU_RUNTIME STREQUAL "MPS")
+    target_compile_definitions(opensplat-render PRIVATE USE_MPS)
+endif()
+# --- End opensplat-render executable ---
 
 if(OPENSPLAT_BUILD_SIMPLE_TRAINER)
     add_executable(simple_trainer simple_trainer.cpp project_gaussians.cpp rasterize_gaussians.cpp cv_utils.cpp)

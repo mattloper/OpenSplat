@@ -1,0 +1,7 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Whenever you call run_terminal_cmd to compile, invoke the build from the project root with an explicit build-directory argument and the parallel flag:
+cmake --build build --parallel
