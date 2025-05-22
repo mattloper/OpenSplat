@@ -8,6 +8,7 @@
 #include "gsplat.hpp"
 #include "utils.hpp"
 #include <vector>
+#include "fg_layer.hpp"
 
 #ifdef USE_HIP
 #include <c10/hip/HIPCachingAllocator.h>
@@ -215,6 +216,12 @@ torch::Tensor Model::forward(Camera& cam, int step){
 
     rgb = torch::clamp_max(rgb, 1.0f);
 
+    // compute camera forward dir after R defined
+    torch::Tensor camForward = R.index({Slice(),2}); // world direction
+
+    // Foreground mask compositing
+    rgb = fgLayer.composite(rgb, static_cast<int>(scaleFactor), camForward);
+
     return rgb;
 }
 
@@ -225,6 +232,7 @@ void Model::optimizersZeroGrad(){
   featuresDcOpt->zero_grad();
   featuresRestOpt->zero_grad();
   opacitiesOpt->zero_grad();
+  fgLayer.zeroGrad();
 }
 
 void Model::optimizersStep(){
@@ -234,6 +242,7 @@ void Model::optimizersStep(){
   featuresDcOpt->step();
   featuresRestOpt->step();
   opacitiesOpt->step();
+  fgLayer.step();
 }
 
 void Model::schedulersStep(int step){
@@ -492,6 +501,11 @@ void Model::save(const std::string &filename, int step){
         saveSplat(filename);
     }else{
         savePly(filename, step);
+    }
+    // Save fgmask parameters alongside, if any
+    if (fgLayer.enabled()){
+        fs::path p(filename);
+        saveFgmask(p.replace_extension(".fg.pt").string());
     }
     std::cout << "Wrote " << filename << std::endl;
 }
@@ -819,4 +833,185 @@ torch::Tensor Model::colorInvariantLoss(torch::Tensor &rgb,
     torch::Tensor l1Loss = l1(rgb, G_aligned);
 
     return (1.0f - ssimWeight) * l1Loss + ssimWeight * ssimLoss;
+}
+
+void Model::saveFgmask(const std::string &filename) const {
+    fgLayer.save(filename);
+}
+
+void Model::loadFgmask(const std::string &filename){
+    // The `for_training` flag is false by default in loadFromText, 
+    // which is suitable if this model instance is for inference/rendering.
+    // If this Model instance could be for continued training, this might need adjustment
+    // or the caller would need to manage the FgLayer's training state separately.
+    if (!fgLayer.loadFromText(filename, device, /*for_training=*/false)) {
+        std::cerr << "[Model::loadFgmask] Warning: Failed to load foreground layer from text file: " << filename << std::endl;
+    }
+}
+
+// New method for full-resolution rendering
+torch::Tensor Model::forwardFullRes(Camera& cam, int step){
+
+    const float scaleFactor = 1.0f; // Force full resolution
+    const float fx = cam.fx / scaleFactor;
+    const float fy = cam.fy / scaleFactor;
+    const float cx = cam.cx / scaleFactor;
+    const float cy = cam.cy / scaleFactor;
+    const int height = static_cast<int>(static_cast<float>(cam.height) / scaleFactor);
+    const int width = static_cast<int>(static_cast<float>(cam.width) / scaleFactor);
+
+    torch::Tensor R = cam.camToWorld.index({Slice(None, 3), Slice(None, 3)});
+    torch::Tensor T = cam.camToWorld.index({Slice(None, 3), Slice(3,4)});
+
+    // Flip the z and y axes to align with gsplat conventions
+    R = torch::matmul(R, torch::diag(torch::tensor({1.0f, -1.0f, -1.0f}, R.device())));
+
+    // worldToCam
+    torch::Tensor Rinv = R.transpose(0, 1);
+    torch::Tensor Tinv = torch::matmul(-Rinv, T);
+
+    // lastHeight and lastWidth are not strictly needed for this one-off render,
+    // but keeping them for consistency with original forward pass logic.
+    // They are typically used for densification logic in afterTrain.
+    // For a one-off full-res dump, this is less critical.
+    int originalLastHeight = lastHeight; 
+    int originalLastWidth = lastWidth;
+    lastHeight = height;
+    lastWidth = width;
+
+    torch::Tensor viewMat = torch::eye(4, device);
+    viewMat.index_put_({Slice(None, 3), Slice(None, 3)}, Rinv);
+    viewMat.index_put_({Slice(None, 3), Slice(3, 4)}, Tinv);
+        
+    float fovX = 2.0f * std::atan(width / (2.0f * fx));
+    float fovY = 2.0f * std::atan(height / (2.0f * fy));
+
+    torch::Tensor projMat = projectionMatrix(0.001f, 1000.0f, fovX, fovY, device);
+    torch::Tensor colors =  torch::cat({featuresDc.index({Slice(), None, Slice()}), featuresRest}, 1);
+
+    torch::Tensor conics;
+    torch::Tensor depths; // GPU-only
+    torch::Tensor numTilesHit; // GPU-only
+    torch::Tensor cov2d; // CPU-only
+    torch::Tensor camDepths; // CPU-only
+    torch::Tensor rgb;
+    torch::Tensor current_xys; // Renamed to avoid conflict with member 'xys'
+
+    if (device == torch::kCPU){
+        auto p = ProjectGaussiansCPU::apply(means, 
+                                torch::exp(scales), 
+                                1, 
+                                quats / quats.norm(2, {-1}, true), 
+                                viewMat, 
+                                torch::matmul(projMat, viewMat),
+                                fx, 
+                                fy,
+                                cx,
+                                cy,
+                                height,
+                                width);
+        current_xys = p[0]; // Use local variable
+        // radii is a member, so we'll update it, but it might be overwritten by the main training loop's forward pass
+        radii = p[1]; 
+        conics = p[2];
+        cov2d = p[3];
+        camDepths = p[4];
+    }else{
+        #if defined(USE_HIP) || defined(USE_CUDA) || defined(USE_MPS)
+
+        TileBounds tileBounds = std::make_tuple((width + BLOCK_X - 1) / BLOCK_X,
+                        (height + BLOCK_Y - 1) / BLOCK_Y,
+                        1);
+        auto p = ProjectGaussians::apply(means, 
+                        torch::exp(scales), 
+                        1, 
+                        quats / quats.norm(2, {-1}, true), 
+                        viewMat, 
+                        torch::matmul(projMat, viewMat),
+                        fx, 
+                        fy,
+                        cx,
+                        cy,
+                        height,
+                        width,
+                        tileBounds);
+
+        current_xys = p[0]; // Use local variable
+        depths = p[1];
+        radii = p[2]; // Update member radii
+        conics = p[3];
+        numTilesHit = p[4];
+        #else
+            throw std::runtime_error("GPU support not built, use --cpu");
+        #endif
+    }
+    
+    // No retain_grad() needed for current_xys as this is a detached render pass
+
+    if (radii.sum().item<float>() == 0.0f) {
+        // Restore original lastHeight and lastWidth before returning
+        lastHeight = originalLastHeight;
+        lastWidth = originalLastWidth;
+        return backgroundColor.repeat({height, width, 1});
+    }
+
+    torch::Tensor viewDirs = means.detach() - T.transpose(0, 1).to(device);
+    viewDirs = viewDirs / viewDirs.norm(2, {-1}, true);
+    // Use the max SH degree for full-res dump, or the current step's SH degree if preferred.
+    // For visual quality, max SH degree is better.
+    int degreesToUse = shDegree; // Use max SH degree for best quality
+    // int degreesToUse = (std::min<int>)(step / shDegreeInterval, shDegree); // Or use step-dependent degree
+
+    torch::Tensor rgbs;
+    
+    if (device == torch::kCPU){
+        rgbs = SphericalHarmonicsCPU::apply(degreesToUse, viewDirs, colors);
+    }else{
+        #if defined(USE_HIP) || defined(USE_CUDA) || defined(USE_MPS)
+        rgbs = SphericalHarmonics::apply(degreesToUse, viewDirs, colors);
+        #endif
+    }
+    
+    rgbs = torch::clamp_min(rgbs + 0.5f, 0.0f);
+
+    if (device == torch::kCPU){
+        rgb = RasterizeGaussiansCPU::apply(
+                current_xys, // Use local xys
+                radii,
+                conics,
+                rgbs,
+                torch::sigmoid(opacities),
+                cov2d,
+                camDepths,
+                height,
+                width,
+                backgroundColor);
+    }else{  
+        #if defined(USE_HIP) || defined(USE_CUDA) || defined(USE_MPS)
+        rgb = RasterizeGaussians::apply(
+                current_xys, // Use local xys
+                depths,
+                radii,
+                conics,
+                numTilesHit,
+                rgbs,
+                torch::sigmoid(opacities),
+                height,
+                width,
+                backgroundColor);
+        #endif
+    }
+
+    rgb = torch::clamp_max(rgb, 1.0f);
+
+    torch::Tensor camForward = R.index({Slice(),2}); 
+
+    // Foreground mask compositing, use scaleFactor 1.0 for fg layer as well
+    rgb = fgLayer.composite(rgb, static_cast<int>(1.0f), camForward);
+
+    // Restore original lastHeight and lastWidth
+    lastHeight = originalLastHeight;
+    lastWidth = originalLastWidth;
+
+    return rgb;
 }
