@@ -10,6 +10,7 @@
 #include "ssim.hpp"
 #include "input_data.hpp"
 #include "optim_scheduler.hpp"
+#include "fg_layer.hpp"
 
 using namespace torch::indexing;
 using namespace torch::autograd;
@@ -24,7 +25,8 @@ struct Model{
         int numDownscales, int resolutionSchedule, int shDegree, int shDegreeInterval, 
         int refineEvery, int warmupLength, int resetAlphaEvery, float densifyGradThresh, float densifySizeThresh, int stopScreenSizeAt, float splitScreenSize,
         int maxSteps, bool keepCrs,
-        const torch::Device &device) :
+        const torch::Device &device,
+        const torch::Tensor &fgMask = torch::Tensor()) :
     numCameras(numCameras),
     numDownscales(numDownscales), resolutionSchedule(resolutionSchedule), shDegree(shDegree), shDegreeInterval(shDegreeInterval), 
     refineEvery(refineEvery), warmupLength(warmupLength), resetAlphaEvery(resetAlphaEvery), stopSplitAt(maxSteps / 2), densifyGradThresh(densifyGradThresh), densifySizeThresh(densifySizeThresh), stopScreenSizeAt(stopScreenSizeAt), splitScreenSize(splitScreenSize),
@@ -53,6 +55,12 @@ struct Model{
     
     backgroundColor = torch::tensor({0.6130f, 0.0101f, 0.3984f}, device).requires_grad_(); // Nerf Studio default
 
+    // ---- Foreground mask layer ----
+    if (fgMask.defined() && fgMask.numel() > 0){
+        fgLayer = FgLayer(fgMask);
+        fgLayer.toDevice(device);
+    }
+
     setupOptimizers();
   }
 
@@ -64,6 +72,7 @@ struct Model{
   void releaseOptimizers();
 
   torch::Tensor forward(Camera& cam, int step);
+  torch::Tensor forwardFullRes(Camera& cam, int step);
   void optimizersZeroGrad();
   void optimizersStep();
   void schedulersStep(int step);
@@ -127,6 +136,14 @@ struct Model{
 
   float scale;
   torch::Tensor translation;
+
+  // foreground mask layer
+  FgLayer fgLayer;
+
+  void saveFgmask(const std::string &filename) const;
+  void loadFgmask(const std::string &filename);
+
+  void fgInitialise(const torch::Tensor &gtFullRes){ fgLayer.initialiseFromGroundTruth(gtFullRes);}
 };
 
 
