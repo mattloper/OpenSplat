@@ -8,6 +8,8 @@
 #include <cxxopts.hpp>
 #include <limits>
 #include <opencv2/opencv.hpp>
+#include <cstdlib> // For rand() and RAND_MAX
+#include <string> // For std::to_string
 
 #ifdef USE_VISUALIZATION
 #include "visualizer.hpp"
@@ -97,6 +99,26 @@ int main(int argc, char *argv[]){
     const float splitScreenSize = result["split-screen-size"].as<float>();
     const std::string colmapImageSourcePath = result["colmap-image-path"].as<std::string>();
     const bool invariantMode = result.count("color-invariant") > 0;
+    const std::string fgmask_path = result["fgmask"].as<std::string>();
+    bool use_fgmask = !fgmask_path.empty();
+    torch::Tensor fgMaskTensor; // empty by default
+
+    if (use_fgmask){
+        cv::Mat fgmask_cv = cv::imread(fgmask_path, cv::IMREAD_UNCHANGED);
+        if (fgmask_cv.empty()){
+            std::cerr << "Error: fgmask file could not be loaded: " << fgmask_path << std::endl;
+            return EXIT_FAILURE;
+        }
+        if (fgmask_cv.channels() == 3){
+            cv::cvtColor(fgmask_cv, fgmask_cv, cv::COLOR_BGR2GRAY);
+        }
+        // Apply initial downscale factor so mask matches training images
+        if (downScaleFactor > 1){
+            cv::resize(fgmask_cv, fgmask_cv, cv::Size(fgmask_cv.cols / downScaleFactor, fgmask_cv.rows / downScaleFactor), 0,0, cv::INTER_NEAREST);
+        }
+        fgMaskTensor = torch::from_blob(fgmask_cv.data, {fgmask_cv.rows, fgmask_cv.cols, 1}, torch::kByte).clone();
+        fgMaskTensor = fgMaskTensor.to(torch::kBool);
+    }
 
     torch::Device device = torch::kCPU;
     int displayStep = 10;
@@ -136,7 +158,15 @@ int main(int argc, char *argv[]){
                     numDownscales, resolutionSchedule, shDegree, shDegreeInterval, 
                     refineEvery, warmupLength, resetAlphaEvery, densifyGradThresh, densifySizeThresh, stopScreenSizeAt, splitScreenSize,
                     numIters, keepCrs,
-                    device);
+                    device,
+                    fgMaskTensor);
+
+        // Initialise fgLayer colours/opacities from first camera ground-truth (step 0)
+        if (use_fgmask){
+            Camera &initCam = cams[0];
+            torch::Tensor initGT = initCam.getImage(1).to(device); // full-res with initial downscale factor 1
+            model.fgInitialise(initGT);
+        }
 
         std::vector< size_t > camIndices( cams.size() );
         std::iota( camIndices.begin(), camIndices.end(), 0 );
@@ -147,6 +177,11 @@ int main(int argc, char *argv[]){
 
         if (resume != ""){
             step = model.loadPly(resume) + 1;
+            fs::path p(resume);
+            fs::path fgfile = p.replace_extension(".fg.pt");
+            if (fs::exists(fgfile)){
+                model.loadFgmask(fgfile.string());
+            }
         }
 
         double sumLoss = 0.0, sumDev = 0.0;
