@@ -1,17 +1,4 @@
 cmake_minimum_required(VERSION 3.21)
-
-# Disallow in-source builds ----------------------------------------------
-if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
-  message(FATAL_ERROR
-          "In-source builds are disabled.\n"
-          "Create a separate folder and run\n"
-          "    cmake -S . -B build\n")
-endif()
-
-# Tell CMake to refuse to touch the source tree
-set(CMAKE_DISABLE_SOURCE_CHANGES ON)
-set(CMAKE_DISABLE_IN_SOURCE_BUILD ON)
-
 project(opensplat)
 
 set(OPENSPLAT_BUILD_SIMPLE_TRAINER OFF CACHE BOOL "Build simple trainer applications")
@@ -239,7 +226,7 @@ target_include_directories(gsplat_cpu PRIVATE ${TORCH_INCLUDE_DIRS})
 
 set(OPENSPLAT_SRC_FILES opensplat.cpp point_io.cpp nerfstudio.cpp model.cpp
 kdtree_tensor.cpp spherical_harmonics.cpp cv_utils.cpp utils.cpp project_gaussians.cpp
-rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp fg_layer.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
+rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
 tensor_math.cpp)
 
 if (OPENSPLAT_BUILD_VISUALIZER)
@@ -286,7 +273,7 @@ endif()
 # --- Add opensplat-render executable ---
 set(OPENSPLAT_RENDER_SRC_FILES opensplat-render.cpp pose_utils.cpp point_io.cpp nerfstudio.cpp model.cpp
 kdtree_tensor.cpp spherical_harmonics.cpp cv_utils.cpp utils.cpp project_gaussians.cpp
-rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp fg_layer.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
+rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
 tensor_math.cpp)
 
 add_executable(opensplat-render ${OPENSPLAT_RENDER_SRC_FILES})
