@@ -8,13 +8,41 @@ using namespace torch::indexing;
 
 namespace cm{
 
+static fs::path findColmapRoot(const fs::path &projectRoot){
+    // Priority 1: cameras.bin in project root
+    if (fs::exists(projectRoot / "cameras.bin")) return projectRoot;
+
+    // Priority 2: pick subdir in sparse/ with largest cameras.bin
+    fs::path sparseRoot = projectRoot / "sparse";
+    std::uintmax_t bestSize = 0;
+    fs::path bestDir;
+
+    if (fs::exists(sparseRoot) && fs::is_directory(sparseRoot)){
+        for (const auto &entry : fs::directory_iterator(sparseRoot)){
+            if (!entry.is_directory()) continue;
+            fs::path camPath = entry.path() / "cameras.bin";
+            if (!fs::exists(camPath)) continue;
+
+            std::uintmax_t sz = fs::file_size(camPath);
+            if (sz > bestSize){
+                bestSize = sz;
+                bestDir = entry.path();
+            }
+        }
+    }
+
+    if (bestSize > 0){
+        std::cout << "[COLMAP] Using reconstruction in: " << bestDir << std::endl;
+        return bestDir;
+    }
+
+    // Fallback to original project root (error will be thrown later if files still missing)
+    return projectRoot;
+}
+
 InputData inputDataFromColmap(const std::string &projectRoot, const std::string& colmapImageSourcePath){
     InputData ret;
-    fs::path cmRoot(projectRoot);
-
-    if (!fs::exists(cmRoot / "cameras.bin") && fs::exists(cmRoot / "sparse" / "0" / "cameras.bin")){
-        cmRoot = cmRoot / "sparse" / "0";
-    }
+    fs::path cmRoot = findColmapRoot(projectRoot);
 
     fs::path camerasPath = cmRoot / "cameras.bin";
     fs::path imagesPath = cmRoot / "images.bin";

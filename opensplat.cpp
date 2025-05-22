@@ -6,8 +6,6 @@
 #include "cv_utils.hpp"
 #include "constants.hpp"
 #include <cxxopts.hpp>
-#include <limits>
-#include <opencv2/opencv.hpp>
 
 #ifdef USE_VISUALIZATION
 #include "visualizer.hpp"
@@ -44,8 +42,6 @@ int main(int argc, char *argv[]){
         ("stop-screen-size-at", "Stop splitting gaussians that are larger than [split-screen-size] after these many steps", cxxopts::value<int>()->default_value("4000"))
         ("split-screen-size", "Split gaussians that are larger than this percentage of screen space", cxxopts::value<float>()->default_value("0.05"))
         ("colmap-image-path", "Override the default image path for COLMAP-based input", cxxopts::value<std::string>()->default_value(""))
-        ("color-invariant", "Apply colour-invariant loss to ALL images")
-        ("fgmask", "Path to foreground mask source (file for global mask, directory for per-image masks)", cxxopts::value<std::string>()->default_value(""))
 
         ("h,help", "Print usage")
         ("version", "Print version")
@@ -96,7 +92,6 @@ int main(int argc, char *argv[]){
     const int stopScreenSizeAt = result["stop-screen-size-at"].as<int>();
     const float splitScreenSize = result["split-screen-size"].as<float>();
     const std::string colmapImageSourcePath = result["colmap-image-path"].as<std::string>();
-    const bool invariantMode = result.count("color-invariant") > 0;
 
     torch::Device device = torch::kCPU;
     int displayStep = 10;
@@ -120,7 +115,7 @@ int main(int argc, char *argv[]){
     try{
         InputData inputData = inputDataFromX(projectRoot, colmapImageSourcePath);
 
-        parallel_for(inputData.cameras.begin(), inputData.cameras.end(), [&](Camera &cam){
+        parallel_for(inputData.cameras.begin(), inputData.cameras.end(), [&downScaleFactor](Camera &cam){
             cam.loadImage(downScaleFactor);
         });
 
@@ -128,8 +123,6 @@ int main(int argc, char *argv[]){
         auto t = inputData.getCameras(validate, valImage);
         std::vector<Camera> cams = std::get<0>(t);
         Camera *valCam = std::get<1>(t);
-
-        std::cout << "Colour-invariant mode: " << (invariantMode ? "ON" : "OFF") << std::endl;
 
         Model model(inputData,
                     cams.size(),
@@ -149,61 +142,21 @@ int main(int argc, char *argv[]){
             step = model.loadPly(resume) + 1;
         }
 
-        double sumLoss = 0.0, sumDev = 0.0;
-        int cnt = 0, cntDev = 0;
-
         for (; step <= numIters; step++){
-            float devThis = std::numeric_limits<float>::quiet_NaN();
             Camera& cam = cams[ camsIter.next() ];
 
-            float current_gt_downscale_factor = model.getDownscaleFactor(step);
-            torch::Tensor gt_original_no_nan = cam.getImage(current_gt_downscale_factor).to(device);
-            torch::Tensor gt = gt_original_no_nan;
-
             model.optimizersZeroGrad();
- 
+
             torch::Tensor rgb = model.forward(cam, step);
+            torch::Tensor gt = cam.getImage(model.getDownscaleFactor(step));
+            gt = gt.to(device);
 
-            // Compute both variants once
-            torch::Tensor lossToBackprop;
-            torch::Tensor invLoss;
-            if (invariantMode){
-                invLoss = model.colorInvariantLoss(rgb, gt, ssimWeight);
-                lossToBackprop = invLoss;
-            } else {
-                lossToBackprop = model.mainLoss(rgb, gt, ssimWeight);
-            }
-
-            lossToBackprop.backward();
-
-            // Book-keeping for console stats
-            sumLoss += lossToBackprop.item<double>();
-            ++cnt;
-
-            // compute deviation from identity for stats
-            if (invariantMode){
-                torch::Tensor Rf = rgb.reshape({-1,3}).cpu();
-                torch::Tensor Gf = gt_original_no_nan.reshape({-1,3}).cpu();
-                torch::Tensor gainsDbg = (Gf * Rf).sum(0) / (Gf.pow(2).sum(0) + 1e-6);
-                devThis = (gainsDbg - 1).abs().mean().item<float>();
-                sumDev += devThis;
-                ++cntDev;
-            }
-
+            torch::Tensor mainLoss = model.mainLoss(rgb, gt, ssimWeight);
+            mainLoss.backward();
+            
             if (step % displayStep == 0) {
                 const float percentage = static_cast<float>(step) / numIters;
-                auto avgLoss = cnt ? sumLoss / cnt : std::numeric_limits<double>::quiet_NaN();
-                auto avgDev = cntDev ? sumDev / cntDev : std::numeric_limits<double>::quiet_NaN();
-                std::cout << "Step " << step << "/" << numIters << " (" << floor(percentage * 100) << "% )  "
-                          << "loss=" << avgLoss << " (n=" << cnt << ")";
-                if (invariantMode){
-                    std::cout << "  |gains-1|_mean=" << avgDev;
-                }
-                std::cout << std::endl;
-
-                // reset running window
-                sumLoss = sumDev = 0.0;
-                cnt = cntDev = 0;
+                std::cout << "Step " << step << ": " << mainLoss.item<float>() << " (" << floor(percentage * 100) << "%)" <<  std::endl;
             }
 
             model.optimizersStep();
@@ -224,7 +177,7 @@ int main(int argc, char *argv[]){
 
 #ifdef USE_VISUALIZATION
             visualizer.SetInitialGaussianNum(inputData.points.xyz.size(0));
-            visualizer.SetLoss(step, lossToBackprop.item<float>());
+            visualizer.SetLoss(step, mainLoss.item<float>());
             visualizer.SetGaussians(model.means, model.scales, model.featuresDc,
                                     model.opacities);
             visualizer.SetImage(rgb, gt);
@@ -238,18 +191,9 @@ int main(int argc, char *argv[]){
 
         // Validate
         if (valCam != nullptr){
-            // Prepare masks for validation camera
-            float val_downscale = model.getDownscaleFactor(numIters);
             torch::Tensor rgb = model.forward(*valCam, numIters);
-            torch::Tensor gt = valCam->getImage(val_downscale).to(device);
-            float valLoss = invariantMode
-                ? model.colorInvariantLoss(rgb, 
-                                           gt, 
-                                           ssimWeight).item<float>()
-                : model.mainLoss(rgb, 
-                                 gt,
-                                 ssimWeight).item<float>();
-            std::cout << valCam->filePath << " validation loss: " << valLoss << std::endl; 
+            torch::Tensor gt = valCam->getImage(model.getDownscaleFactor(numIters)).to(device);
+            std::cout << valCam->filePath << " validation loss: " << model.mainLoss(rgb, gt, ssimWeight).item<float>() << std::endl; 
         }
     }catch(const std::exception &e){
         std::cerr << e.what() << std::endl;

@@ -7,7 +7,6 @@
 #include "tensor_math.hpp"
 #include "gsplat.hpp"
 #include "utils.hpp"
-#include <vector>
 
 #ifdef USE_HIP
 #include <c10/hip/HIPCachingAllocator.h>
@@ -771,52 +770,8 @@ int Model::loadPly(const std::string &filename){
     throw std::runtime_error("Invalid PLY file");
 }
 
-torch::Tensor Model::mainLoss(torch::Tensor &rgb, const torch::Tensor &gt_nan, float ssimWeight){
-    torch::Tensor l1Loss = l1(rgb, gt_nan);
-    torch::Tensor ssimLoss = 1.0f - ssim.eval(rgb, gt_nan);
-    return (1.0f - ssimWeight) * l1Loss + ssimWeight * ssimLoss;
-}
-
-// Compute loss with per-channel gain (diagonal) colour correction. No bias, no mixing.
-torch::Tensor Model::colorInvariantLoss(torch::Tensor &rgb, 
-                                     const torch::Tensor &gt_nan,
-                                     float ssimWeight){
-    // Flatten
-    torch::Tensor R_flat = rgb.reshape({-1,3});
-    torch::Tensor G_flat = gt_nan.reshape({-1,3});
-
-    const double eps = 1e-6;
-    torch::Tensor median_gains;
-    {
-        torch::NoGradGuard guard; // robust gain estimation has no gradients
-
-        // Compute per-channel ratio while ignoring NaNs coming from masked pixels.
-        torch::Tensor ratio = R_flat.detach() / (G_flat.detach() + eps); // N×3 (may contain NaNs)
-
-        std::vector<torch::Tensor> perChanGains;
-        for (int c = 0; c < 3; ++c) {
-            torch::Tensor rc = ratio.index({Slice(), c});          // N
-            torch::Tensor finite_mask = torch::isfinite(rc);       // N (bool)
-            if (finite_mask.sum().item<int>() == 0) {
-                // If no valid pixels for this channel, default gain = 1
-                perChanGains.push_back(torch::tensor(1.0f, rc.options()));
-            } else {
-                torch::Tensor rc_valid = rc.index({finite_mask});  // M
-                // torch::median returns scalar when input is 1-D
-                torch::Tensor gain_c = torch::median(rc_valid);
-                perChanGains.push_back(gain_c);
-            }
-        }
-        torch::Tensor gainsVal = torch::stack(perChanGains); // 3
-        median_gains = gainsVal.to(rgb.device());
-    }
-    torch::Tensor final_gains = median_gains * 0.99f + 0.01f;
-    final_gains = final_gains.detach();
-
-    // Apply gains to the gt_original for L1 and gt_for_ssim_calc for SSIM
-    torch::Tensor G_aligned = gt_nan * final_gains.view({1,1,3});
-    torch::Tensor ssimLoss = 1.0f - ssim.eval(rgb, G_aligned);
-    torch::Tensor l1Loss = l1(rgb, G_aligned);
-
+torch::Tensor Model::mainLoss(torch::Tensor &rgb, torch::Tensor &gt, float ssimWeight){
+    torch::Tensor ssimLoss = 1.0f - ssim.eval(rgb, gt);
+    torch::Tensor l1Loss = l1(rgb, gt);
     return (1.0f - ssimWeight) * l1Loss + ssimWeight * ssimLoss;
 }

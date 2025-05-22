@@ -366,6 +366,8 @@ torch::Tensor render_one_image(
          throw std::runtime_error("render_one_image: GPU support not built for SH, but device is not CPU.");
         #endif
     }
+    
+    // Remove c0 scaling for background splats to match visualizer behavior
     rgbs = torch::clamp_min(rgbs + 0.5f, 0.0f);
 
     if (device == torch::kCPU){
@@ -428,6 +430,7 @@ int main(int argc, char *argv[]) {
     const std::string splat_colmap_path = result["splat-colmap"].as<std::string>();
     std::string view_colmap_path = result["view-colmap"].as<std::string>();
     const std::string output_dir_path = result["output-dir"].as<std::string>();
+    const std::string fgmask_cli_path = "";
     std::string device_str = result["device"].as<std::string>();
 
     if (view_colmap_path.empty()) {
@@ -535,23 +538,42 @@ int main(int argc, char *argv[]) {
         int rendered_count = 0;
         for (const auto& cam_b_original : cameras_b) {
             torch::Tensor original_cam_b_pose = cam_b_original.camToWorld.to(device); 
-            torch::Tensor render_pose_in_a_coord = torch::matmul(transform_b_to_a_matrix, original_cam_b_pose);
+            torch::Tensor final_render_pose;
+
+            if (splat_colmap_path == view_colmap_path) {
+                final_render_pose = original_cam_b_pose;
+                // std::cout << "Using original pose for rendering as splat and view colmaps are the same." << std::endl;
+            } else {
+                final_render_pose = torch::matmul(transform_b_to_a_matrix, original_cam_b_pose);
+                // std::cout << "Using transformed pose for rendering." << std::endl;
+            }
             
             Camera render_cam = cam_b_original; 
-            render_cam.camToWorld = render_pose_in_a_coord; 
+            render_cam.camToWorld = final_render_pose; 
 
             std::string image_filename = fs::path(render_cam.filePath).filename().string();
             std::cout << "Rendering image for: " << image_filename << " (H:" << render_cam.height << ", W:" << render_cam.width << ")" << std::endl;
             
             torch::Tensor rendered_image_tensor = render_one_image(splat_data, render_cam, device, background_color);
 
-            cv::Mat image_to_save = tensorToImage(rendered_image_tensor.cpu()); 
-            if (image_to_save.channels() == 3) {
-                 cv::cvtColor(image_to_save, image_to_save, cv::COLOR_RGB2BGR); 
-            }
-            cv::flip(image_to_save, image_to_save, -1); // -1 flips both axes (180-degree rotation)
+            // Flip the background image vertically before compositing
+            rendered_image_tensor = torch::flip(rendered_image_tensor, {0});
+            
+            // Also flip horizontally to match original orientation
+            rendered_image_tensor = torch::flip(rendered_image_tensor, {1});
 
-            fs::path output_image_path = fs::path(output_dir_path) / image_filename;
+            cv::Mat image_to_save = tensorToImage(rendered_image_tensor.contiguous().cpu());
+
+            // OpenCV expects BGR format for saving images with imwrite, but our tensor has RGB
+            // We need to convert from RGB to BGR before saving
+            if (image_to_save.channels() == 3) {
+                cv::cvtColor(image_to_save, image_to_save, cv::COLOR_RGB2BGR);
+            }
+            
+            fs::path output_image_path = fs::path(output_dir_path) / (fs::path(image_filename).stem().string() + ".png"); // Save as PNG
+            std::cout << "Saving to: " << output_image_path << std::endl; // Debug: show save path
+
+            // Use standard imwrite to save the BGR image
             if (!cv::imwrite(output_image_path.string(), image_to_save)) {
                 std::cerr << "Failed to save rendered image to: " << output_image_path << std::endl;
             } else {
