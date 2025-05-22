@@ -16,6 +16,7 @@
 #include "project_gaussians.hpp" // For ProjectGaussians(CPU)::apply
 #include "rasterize_gaussians.hpp" // For RasterizeGaussians(CPU)::apply
 #include "constants.hpp" // For BLOCK_X, BLOCK_Y for TileBounds
+#include "fg_layer.hpp"
 
 // #include "model.hpp" // We will adapt PLY loading, not use Model directly for it.
 
@@ -366,6 +367,8 @@ torch::Tensor render_one_image(
          throw std::runtime_error("render_one_image: GPU support not built for SH, but device is not CPU.");
         #endif
     }
+    
+    // Remove c0 scaling for background splats to match visualizer behavior
     rgbs = torch::clamp_min(rgbs + 0.5f, 0.0f);
 
     if (device == torch::kCPU){
@@ -400,6 +403,7 @@ int main(int argc, char *argv[]) {
         ("splat-colmap", "Path to the COLMAP directory corresponding to the splat file\'s coordinate system (colmap_A)", cxxopts::value<std::string>())
         ("view-colmap", "Path to the COLMAP directory providing camera viewpoints for rendering (colmap_B). If omitted, splat-colmap is used.", cxxopts::value<std::string>()->default_value(""))
         ("o,output-dir", "Path to the directory where rendered images will be saved", cxxopts::value<std::string>())
+        ("fgmask", "Path to foreground mask data file (e.g., .fgdata.txt). If omitted, no foreground layer is loaded.", cxxopts::value<std::string>()->default_value(""))
         ("device", "Computation device (cpu, cuda, mps). Defaults to best available.", cxxopts::value<std::string>()->default_value(""))
         ("h,help", "Print usage");
 
@@ -428,6 +432,7 @@ int main(int argc, char *argv[]) {
     const std::string splat_colmap_path = result["splat-colmap"].as<std::string>();
     std::string view_colmap_path = result["view-colmap"].as<std::string>();
     const std::string output_dir_path = result["output-dir"].as<std::string>();
+    const std::string fgmask_cli_path = result["fgmask"].as<std::string>();
     std::string device_str = result["device"].as<std::string>();
 
     if (view_colmap_path.empty()) {
@@ -484,6 +489,28 @@ int main(int argc, char *argv[]) {
         SplatData splat_data = load_splat_data_from_ply(splat_file_path, device);
         // Note: load_splat_data_from_ply will throw if the PLY is not as expected.
 
+        FgLayer fgLayer; // Construct default FgLayer (disabled)
+        if (!fgmask_cli_path.empty()) {
+            fs::path fg_data_file(fgmask_cli_path);
+            if (fs::exists(fg_data_file)) {
+                std::cout << "Loading foreground layer data from: " << fg_data_file.string() << std::endl;
+                // Load directly using the new text-based load function.
+                // The `for_training` flag is false for rendering.
+                if (!fgLayer.loadFromText(fg_data_file.string(), device, false)) {
+                    std::cerr << "Warning: Failed to load foreground layer from " << fg_data_file.string() 
+                              << ". Proceeding without foreground layer." << std::endl;
+                    // fgLayer will remain disabled if loadFromText returns false
+                } else {
+                    std::cout << "Successfully initialized foreground layer from text file." << std::endl;
+                }
+            } else {
+                std::cerr << "Warning: Specified foreground mask file does not exist: " << fg_data_file.string()
+                          << ". Proceeding without foreground layer." << std::endl;
+            }
+        } else {
+            std::cout << "No foreground mask file specified. Proceeding without foreground layer." << std::endl;
+        }
+
         std::cout << "\nStep 2: Loading Splat COLMAP data (colmap_A)..." << std::endl;
         InputData input_data_a = cm::inputDataFromColmap(splat_colmap_path, ""); 
         const std::vector<Camera>& cameras_a = input_data_a.cameras;
@@ -535,23 +562,51 @@ int main(int argc, char *argv[]) {
         int rendered_count = 0;
         for (const auto& cam_b_original : cameras_b) {
             torch::Tensor original_cam_b_pose = cam_b_original.camToWorld.to(device); 
-            torch::Tensor render_pose_in_a_coord = torch::matmul(transform_b_to_a_matrix, original_cam_b_pose);
+            torch::Tensor final_render_pose;
+
+            if (splat_colmap_path == view_colmap_path) {
+                final_render_pose = original_cam_b_pose;
+                // std::cout << "Using original pose for rendering as splat and view colmaps are the same." << std::endl;
+            } else {
+                final_render_pose = torch::matmul(transform_b_to_a_matrix, original_cam_b_pose);
+                // std::cout << "Using transformed pose for rendering." << std::endl;
+            }
             
             Camera render_cam = cam_b_original; 
-            render_cam.camToWorld = render_pose_in_a_coord; 
+            render_cam.camToWorld = final_render_pose; 
 
             std::string image_filename = fs::path(render_cam.filePath).filename().string();
             std::cout << "Rendering image for: " << image_filename << " (H:" << render_cam.height << ", W:" << render_cam.width << ")" << std::endl;
             
+            // Calculate cam_fwd for FgLayer.composite directly from the Z-axis of the camera-to-world rotation
+            // This matches the logic in visualizer.cpp
+            torch::Tensor R_camera_to_world = render_cam.camToWorld.to(device).index({Slice(None,3), Slice(None,3)});
+            torch::Tensor cam_fwd = R_camera_to_world.index({Slice(),2}); // Direct Z-axis
+
             torch::Tensor rendered_image_tensor = render_one_image(splat_data, render_cam, device, background_color);
 
-            cv::Mat image_to_save = tensorToImage(rendered_image_tensor.cpu()); 
-            if (image_to_save.channels() == 3) {
-                 cv::cvtColor(image_to_save, image_to_save, cv::COLOR_RGB2BGR); 
-            }
-            cv::flip(image_to_save, image_to_save, -1); // -1 flips both axes (180-degree rotation)
+            // Flip the background image vertically before compositing
+            rendered_image_tensor = torch::flip(rendered_image_tensor, {0});
+            
+            // Also flip horizontally to match original orientation
+            rendered_image_tensor = torch::flip(rendered_image_tensor, {1});
 
-            fs::path output_image_path = fs::path(output_dir_path) / image_filename;
+            if (fgLayer.enabled()){
+                rendered_image_tensor = fgLayer.composite(rendered_image_tensor, 1, cam_fwd);
+            }
+
+            cv::Mat image_to_save = tensorToImage(rendered_image_tensor.contiguous().cpu());
+
+            // OpenCV expects BGR format for saving images with imwrite, but our tensor has RGB
+            // We need to convert from RGB to BGR before saving
+            if (image_to_save.channels() == 3) {
+                cv::cvtColor(image_to_save, image_to_save, cv::COLOR_RGB2BGR);
+            }
+            
+            fs::path output_image_path = fs::path(output_dir_path) / (fs::path(image_filename).stem().string() + ".png"); // Save as PNG
+            std::cout << "Saving to: " << output_image_path << std::endl; // Debug: show save path
+
+            // Use standard imwrite to save the BGR image
             if (!cv::imwrite(output_image_path.string(), image_to_save)) {
                 std::cerr << "Failed to save rendered image to: " << output_image_path << std::endl;
             } else {
