@@ -6,6 +6,7 @@
 #include "cv_utils.hpp"
 #include "constants.hpp"
 #include <cxxopts.hpp>
+#include "evaluation.hpp"
 
 #ifdef USE_VISUALIZATION
 #include "visualizer.hpp"
@@ -119,10 +120,11 @@ int main(int argc, char *argv[]){
             cam.loadImage(downScaleFactor);
         });
 
-        // Withhold a validation camera if necessary
-        auto t = inputData.getCameras(validate, valImage);
-        std::vector<Camera> cams = std::get<0>(t);
-        Camera *valCam = std::get<1>(t);
+        // Split cameras into train/test sets (deterministic)
+        std::vector<Camera> trainCams, testCams;
+        splitCameras(inputData.cameras, trainCams, testCams, 10);
+
+        std::vector<Camera>& cams = trainCams;
 
         Model model(inputData,
                     cams.size(),
@@ -137,6 +139,14 @@ int main(int argc, char *argv[]){
 
         int imageSize = -1;
         size_t step = 1;
+
+        // Evaluation milestones and snapshot storage
+        std::vector<EvalSnapshot> snapshots;
+        const std::vector<size_t> milestones = { static_cast<size_t>(numIters) / 4,
+                                                 static_cast<size_t>(numIters) / 2,
+                                                 3 * static_cast<size_t>(numIters) / 4,
+                                                 static_cast<size_t>(numIters) };
+        size_t nextMilestoneIdx = 0;
 
         if (resume != ""){
             step = model.loadPly(resume) + 1;
@@ -163,17 +173,20 @@ int main(int argc, char *argv[]){
             model.schedulersStep(step);
             model.afterTrain(step);
 
+            // Periodic evaluation (catch up if we overshoot)
+            while (nextMilestoneIdx < milestones.size() && step >= milestones[nextMilestoneIdx]){
+                size_t mIter = milestones[nextMilestoneIdx];
+                snapshots.push_back( evaluate(model, trainCams, testCams,
+                                              mIter, numIters, ssimWeight) );
+                nextMilestoneIdx++;
+            }
+
             if (saveEvery > 0 && step % saveEvery == 0){
                 fs::path p(outputScene);
                 model.save(p.replace_filename(fs::path(p.stem().string() + "_" + std::to_string(step) + p.extension().string())).string(), step);
             }
 
-            if (!valRender.empty() && step % 10 == 0){
-                torch::Tensor rgb = model.forward(*valCam, step);
-                cv::Mat image = tensorToImage(rgb.detach().cpu());
-                cv::cvtColor(image, image, cv::COLOR_RGB2BGR);
-                cv::imwrite((fs::path(valRender) / (std::to_string(step) + ".png")).string(), image);
-            }
+            // No separate validation render; evaluation snapshots will handle logging
 
 #ifdef USE_VISUALIZATION
             visualizer.SetInitialGaussianNum(inputData.points.xyz.size(0));
@@ -189,12 +202,8 @@ int main(int argc, char *argv[]){
         model.save(outputScene, numIters);
         // model.saveDebugPly("debug.ply", numIters);
 
-        // Validate
-        if (valCam != nullptr){
-            torch::Tensor rgb = model.forward(*valCam, numIters);
-            torch::Tensor gt = valCam->getImage(model.getDownscaleFactor(numIters)).to(device);
-            std::cout << valCam->filePath << " validation loss: " << model.mainLoss(rgb, gt, ssimWeight).item<float>() << std::endl; 
-        }
+        // Save evaluation snapshots collected during training
+        saveEval(snapshots, trainCams, testCams, outputScene);
     }catch(const std::exception &e){
         std::cerr << e.what() << std::endl;
         exit(1);
