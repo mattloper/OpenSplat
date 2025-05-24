@@ -142,9 +142,10 @@ int main(int argc, char *argv[]){
 
         // Evaluation milestones and snapshot storage
         std::vector<EvalSnapshot> snapshots;
-        const std::vector<size_t> milestones = { static_cast<size_t>(numIters) / 4,
-                                                 static_cast<size_t>(numIters) / 2,
-                                                 3 * static_cast<size_t>(numIters) / 4,
+        const std::vector<size_t> milestones = { static_cast<size_t>(numIters) / 5,
+                                                 2 * static_cast<size_t>(numIters) / 5,
+                                                 3 * static_cast<size_t>(numIters) / 5,
+                                                 4 * static_cast<size_t>(numIters) / 5,
                                                  static_cast<size_t>(numIters) };
         size_t nextMilestoneIdx = 0;
 
