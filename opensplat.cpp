@@ -32,7 +32,7 @@ int main(int argc, char *argv[]){
         ("d,downscale-factor", "Scale input images by this factor.", cxxopts::value<float>()->default_value("1"))
         ("num-downscales", "Number of images downscales to use. After being scaled by [downscale-factor], images are initially scaled by a further (2^[num-downscales]) and the scale is increased every [resolution-schedule]", cxxopts::value<int>()->default_value("2"))
         ("resolution-schedule", "Double the image resolution every these many steps", cxxopts::value<int>()->default_value("3000"))
-        ("sh-degree", "Maximum spherical harmonics degree (must be > 0)", cxxopts::value<int>()->default_value("3"))
+        ("sh-degree", "Maximum spherical harmonics degree (0-4)", cxxopts::value<int>()->default_value("3"))
         ("sh-degree-interval", "Increase the number of spherical harmonics degree after these many steps (will not exceed [sh-degree])", cxxopts::value<int>()->default_value("1000"))
         ("ssim-weight", "Weight to apply to the structural similarity loss. Set to zero to use least absolute deviation (L1) loss only", cxxopts::value<float>()->default_value("0.2"))
         ("refine-every", "Split/duplicate/prune gaussians every these many steps", cxxopts::value<int>()->default_value("100"))
@@ -83,6 +83,12 @@ int main(int argc, char *argv[]){
     const int numDownscales = result["num-downscales"].as<int>();
     const int resolutionSchedule = result["resolution-schedule"].as<int>();
     const int shDegree = result["sh-degree"].as<int>();
+    // New validation: limit supported SH degree to 4
+    if (shDegree > 4) {
+        std::cerr << "Error: --sh-degree " << shDegree << " is not supported (maximum is 4)." << std::endl;
+        std::cerr << "Higher spherical-harmonic orders are not implemented in the current build." << std::endl;
+        return EXIT_FAILURE;
+    }
     const int shDegreeInterval = result["sh-degree-interval"].as<int>();
     const float ssimWeight = result["ssim-weight"].as<float>();
     const int refineEvery = result["refine-every"].as<int>();
