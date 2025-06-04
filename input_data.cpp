@@ -169,6 +169,8 @@ void InputData::saveCameras(const std::string &filename, bool keepCrs){
         camera["height"] = cam.height;
         camera["fx"] = cam.fx;
         camera["fy"] = cam.fy;
+        camera["cx"] = cam.cx;
+        camera["cy"] = cam.cy;
 
         torch::Tensor R = cam.camToWorld.index({Slice(None, 3), Slice(None, 3)});
         torch::Tensor T = cam.camToWorld.index({Slice(None, 3), Slice(3,4)}).squeeze();
