@@ -43,6 +43,7 @@ int main(int argc, char *argv[]){
         ("stop-screen-size-at", "Stop splitting gaussians that are larger than [split-screen-size] after these many steps", cxxopts::value<int>()->default_value("4000"))
         ("split-screen-size", "Split gaussians that are larger than this percentage of screen space", cxxopts::value<float>()->default_value("0.05"))
         ("colmap-image-path", "Override the default image path for COLMAP-based input", cxxopts::value<std::string>()->default_value(""))
+        ("colorcal", "Enable per-camera colour calibration")
 
         ("h,help", "Print usage")
         ("version", "Print version")
@@ -99,6 +100,7 @@ int main(int argc, char *argv[]){
     const int stopScreenSizeAt = result["stop-screen-size-at"].as<int>();
     const float splitScreenSize = result["split-screen-size"].as<float>();
     const std::string colmapImageSourcePath = result["colmap-image-path"].as<std::string>();
+    const bool colorcal = result.count("colorcal") > 0;
 
     torch::Device device = torch::kCPU;
     int displayStep = 10;
@@ -130,13 +132,15 @@ int main(int argc, char *argv[]){
         std::vector<Camera> trainCams, testCams;
         splitCameras(inputData.cameras, trainCams, testCams, 10);
 
-        std::vector<Camera>& cams = trainCams;
+        // Merge into single list for optimisation loop
+        std::vector<Camera> cams = trainCams;
+        cams.insert(cams.end(), testCams.begin(), testCams.end());
 
         Model model(inputData,
                     cams.size(),
                     numDownscales, resolutionSchedule, shDegree, shDegreeInterval, 
                     refineEvery, warmupLength, resetAlphaEvery, densifyGradThresh, densifySizeThresh, stopScreenSizeAt, splitScreenSize,
-                    numIters, keepCrs,
+                    numIters, keepCrs, colorcal,
                     device);
 
         std::vector< size_t > camIndices( cams.size() );
@@ -181,7 +185,11 @@ int main(int argc, char *argv[]){
                 std::cout << "Step " << step << ": " << mainLoss.item<float>() << " (" << floor(percentage * 100) << "%)" <<  std::endl;
             }
 
-            model.optimizersStep();
+            if (cam.isTrain){
+                model.optimizersStep();
+            }else{
+                model.stepColourOnly();
+            }
             model.schedulersStep(step);
             model.afterTrain(step);
 
@@ -202,7 +210,8 @@ int main(int argc, char *argv[]){
 
 #ifdef USE_VISUALIZATION
             visualizer.SetInitialGaussianNum(inputData.points.xyz.size(0));
-            visualizer.SetLoss(step, mainLoss.item<float>());
+            if (cam.isTrain)
+                visualizer.SetLoss(step, mainLoss.item<float>());
             visualizer.SetGaussians(model.means, model.scales, model.featuresDc,
                                     model.opacities);
             visualizer.SetImage(rgb, gt);
@@ -210,7 +219,7 @@ int main(int argc, char *argv[]){
 #endif
         }
 
-        inputData.saveCameras((fs::path(outputScene).parent_path() / "cameras.json").string(), keepCrs);
+        inputData.saveCameras((fs::path(outputScene).parent_path() / "cameras.json").string(), keepCrs, &model);
         model.save(outputScene, numIters);
         // model.saveDebugPly("debug.ply", numIters);
 

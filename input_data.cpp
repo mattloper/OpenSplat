@@ -2,6 +2,7 @@
 #include <nlohmann/json.hpp>
 #include "input_data.hpp"
 #include "cv_utils.hpp"
+#include "model.hpp"
 
 namespace fs = std::filesystem;
 using namespace torch::indexing;
@@ -156,7 +157,7 @@ std::tuple<std::vector<Camera>, Camera *> InputData::getCameras(bool validate, c
 }
 
 
-void InputData::saveCameras(const std::string &filename, bool keepCrs){
+void InputData::saveCameras(const std::string &filename, bool keepCrs, const Model *model){
     json j = json::array();
     
     for (size_t i = 0; i < cameras.size(); i++){
@@ -191,6 +192,17 @@ void InputData::saveCameras(const std::string &filename, bool keepCrs){
 
         camera["position"] = position;
         camera["rotation"] = rotation;
+
+        // write multiplier if enabled and available
+        if (model && model->enableColorCal){
+            auto it = model->cameraPathToIndex.find(cam.filePath);
+            if (it != model->cameraPathToIndex.end()){
+                int idx = it->second;
+                torch::Tensor mul = model->colorCorrections.index({idx}).cpu();
+                camera["rgb_multiplier"] = { mul[0].item<float>(), mul[1].item<float>(), mul[2].item<float>() };
+            }
+        }
+
         j.push_back(camera);
     }
     

@@ -10,6 +10,8 @@
 #include "ssim.hpp"
 #include "input_data.hpp"
 #include "optim_scheduler.hpp"
+#include <unordered_map>
+#include <memory>
 
 using namespace torch::indexing;
 using namespace torch::autograd;
@@ -23,9 +25,10 @@ struct Model{
   Model(const InputData &inputData, int numCameras,
         int numDownscales, int resolutionSchedule, int shDegree, int shDegreeInterval, 
         int refineEvery, int warmupLength, int resetAlphaEvery, float densifyGradThresh, float densifySizeThresh, int stopScreenSizeAt, float splitScreenSize,
-        int maxSteps, bool keepCrs,
+        int maxSteps, bool keepCrs, bool enableColorCal,
         const torch::Device &device) :
     numCameras(numCameras),
+    enableColorCal(enableColorCal),
     numDownscales(numDownscales), resolutionSchedule(resolutionSchedule), shDegree(shDegree), shDegreeInterval(shDegreeInterval), 
     refineEvery(refineEvery), warmupLength(warmupLength), resetAlphaEvery(resetAlphaEvery), stopSplitAt(maxSteps / 2), densifyGradThresh(densifyGradThresh), densifySizeThresh(densifySizeThresh), stopScreenSizeAt(stopScreenSizeAt), splitScreenSize(splitScreenSize),
     maxSteps(maxSteps), keepCrs(keepCrs),
@@ -53,6 +56,15 @@ struct Model{
     
     backgroundColor = torch::tensor({0.6130f, 0.0101f, 0.3984f}, device).requires_grad_(); // Nerf Studio default
 
+    // Build camera->index map and initialise colour corrections
+    if (enableColorCal){
+        int idx = 0;
+        for (const Camera &c : inputData.cameras){
+            cameraPathToIndex[c.filePath] = idx++;
+        }
+        colorCorrections = torch::ones({static_cast<long>(cameraPathToIndex.size()), 3}, torch::TensorOptions().dtype(torch::kFloat32).device(device)).requires_grad_();
+    }
+
     setupOptimizers();
   }
 
@@ -66,6 +78,7 @@ struct Model{
   torch::Tensor forward(Camera& cam, int step);
   void optimizersZeroGrad();
   void optimizersStep();
+  void stepColourOnly();
   void schedulersStep(int step);
   int getDownscaleFactor(int step);
   void afterTrain(int step);
@@ -126,6 +139,12 @@ struct Model{
 
   float scale;
   torch::Tensor translation;
+
+  // Colour calibration
+  bool enableColorCal = false;
+  torch::Tensor colorCorrections;
+  std::unordered_map<std::string,int> cameraPathToIndex;
+  torch::optim::Adam *colorCorrectionsOpt = nullptr;
 };
 
 

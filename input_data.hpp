@@ -25,6 +25,7 @@ struct Camera{
     torch::Tensor camToWorld;
     std::string filePath = "";
     CameraType cameraType = CameraType::Perspective;
+    bool isTrain = true; // flag to indicate training vs hold-out camera
 
     Camera(){};
     Camera(int width, int height, float fx, float fy, float cx, float cy, 
@@ -49,6 +50,10 @@ struct Points{
     torch::Tensor xyz;
     torch::Tensor rgb;
 };
+
+// Forward declaration so InputData can reference Model*
+struct Model;
+
 struct InputData{
     std::vector<Camera> cameras;
     float scale;
@@ -57,8 +62,9 @@ struct InputData{
 
     std::tuple<std::vector<Camera>, Camera *> getCameras(bool validate, const std::string &valImage = "random");
 
-    void saveCameras(const std::string &filename, bool keepCrs);
+    void saveCameras(const std::string &filename, bool keepCrs, const Model *model = nullptr);
 };
+
 // The colmapImageSourcePath is only used in Colmap. In other methods, this path is ignored.
 InputData inputDataFromX(const std::string& projectRoot, const std::string& colmapImageSourcePath = "");
 

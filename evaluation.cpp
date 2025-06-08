@@ -20,8 +20,15 @@ void splitCameras(const std::vector<Camera>& all,
     });
 
     for(size_t i = 0; i < indices.size(); ++i){
-        if((i % everyN) == 0) test.push_back(all[indices[i]]);
-        else                  train.push_back(all[indices[i]]);
+        if((i % everyN) == 0){
+            Camera c = all[indices[i]];
+            c.isTrain = false;
+            test.push_back(c);
+        }else{
+            Camera c = all[indices[i]];
+            c.isTrain = true;
+            train.push_back(c);
+        }
     }
 }
 

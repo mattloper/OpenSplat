@@ -61,6 +61,10 @@ void Model::setupOptimizers(){
     featuresRestOpt = new torch::optim::Adam({featuresRest}, torch::optim::AdamOptions(0.000125));
     opacitiesOpt = new torch::optim::Adam({opacities}, torch::optim::AdamOptions(0.05));
 
+    if (enableColorCal){
+        colorCorrectionsOpt = new torch::optim::Adam({colorCorrections}, torch::optim::AdamOptions(0.0005));
+    }
+
     meansOptScheduler = new OptimScheduler(meansOpt, 0.0000016f, maxSteps);
 }
 
@@ -71,6 +75,7 @@ void Model::releaseOptimizers(){
     RELEASE_SAFELY(featuresDcOpt);
     RELEASE_SAFELY(featuresRestOpt);
     RELEASE_SAFELY(opacitiesOpt);
+    RELEASE_SAFELY(colorCorrectionsOpt);
 
     RELEASE_SAFELY(meansOptScheduler);
 }
@@ -184,6 +189,16 @@ torch::Tensor Model::forward(Camera& cam, int step){
     
     rgbs = torch::clamp_min(rgbs + 0.5f, 0.0f);
 
+    // Apply per-camera colour calibration if enabled
+    if (enableColorCal){
+        auto it = cameraPathToIndex.find(cam.filePath);
+        if (it != cameraPathToIndex.end()){
+            int idx = it->second;
+            torch::Tensor mul = colorCorrections.index({idx}).unsqueeze(0); // 1x3
+            rgbs = rgbs * mul;
+        }
+    }
+
     if (device == torch::kCPU){
         rgb = RasterizeGaussiansCPU::apply(
                 xys,
@@ -224,6 +239,7 @@ void Model::optimizersZeroGrad(){
   featuresDcOpt->zero_grad();
   featuresRestOpt->zero_grad();
   opacitiesOpt->zero_grad();
+  if (enableColorCal && colorCorrectionsOpt) colorCorrectionsOpt->zero_grad();
 }
 
 void Model::optimizersStep(){
@@ -233,6 +249,7 @@ void Model::optimizersStep(){
   featuresDcOpt->step();
   featuresRestOpt->step();
   opacitiesOpt->step();
+  if (enableColorCal && colorCorrectionsOpt) colorCorrectionsOpt->step();
 }
 
 void Model::schedulersStep(int step){
@@ -774,4 +791,10 @@ torch::Tensor Model::mainLoss(torch::Tensor &rgb, torch::Tensor &gt, float ssimW
     torch::Tensor ssimLoss = 1.0f - ssim.eval(rgb, gt);
     torch::Tensor l1Loss = l1(rgb, gt);
     return (1.0f - ssimWeight) * l1Loss + ssimWeight * ssimLoss;
+}
+
+void Model::stepColourOnly(){
+  if (enableColorCal && colorCorrectionsOpt){
+      colorCorrectionsOpt->step();
+  }
 }
