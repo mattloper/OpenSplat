@@ -13,6 +13,8 @@ struct EvalGroup{
     float meanSSIM = 0.0f;
     float meanL1   = 0.0f;
     float mainLoss = 0.0f;
+    float meanVarLap = 0.0f; // Variance of Laplacian
+    float meanTenengrad = 0.0f; // Tenengrad focus metric
 };
 
 struct EvalSnapshot{

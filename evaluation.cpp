@@ -3,6 +3,7 @@
 #include <numeric>
 #include <algorithm>
 #include <fstream>
+#include <torch/torch.h>
 
 namespace fs = std::filesystem;
 using namespace torch::indexing;
@@ -33,19 +34,53 @@ void splitCameras(const std::vector<Camera>& all,
 }
 
 static void accumulate(EvalGroup& grp,
-                       float psnrV, float ssimV, float l1V, float mLoss){
+                       float psnrV, float ssimV, float l1V, float mLoss,
+                       float varLap, float tenengrad){
     grp.meanPSNR += psnrV;
     grp.meanSSIM += ssimV;
     grp.meanL1   += l1V;
     grp.mainLoss += mLoss;
+    grp.meanVarLap += varLap;
+    grp.meanTenengrad += tenengrad;
 }
 
 static void finalize(EvalGroup& grp, size_t count){
     if(count == 0) return;
-    grp.meanPSNR /= count;
-    grp.meanSSIM /= count;
-    grp.meanL1   /= count;
-    grp.mainLoss /= count;
+    grp.meanPSNR       /= count;
+    grp.meanSSIM       /= count;
+    grp.meanL1         /= count;
+    grp.mainLoss       /= count;
+    grp.meanVarLap     /= count;
+    grp.meanTenengrad  /= count;
+}
+
+// Helper kernels for focus metrics
+static torch::Tensor conv2dSingle(const torch::Tensor& img, const torch::Tensor& kernel){
+    using namespace torch::nn::functional;
+    return conv2d(img, kernel, Conv2dFuncOptions().padding(1));
+}
+
+static float varLaplacian(const torch::Tensor& rgb){
+    torch::Tensor gray = 0.299f * rgb.index({Slice(), Slice(), 0}) +
+                         0.587f * rgb.index({Slice(), Slice(), 1}) +
+                         0.114f * rgb.index({Slice(), Slice(), 2});
+    gray = gray.unsqueeze(0).unsqueeze(0); // 1x1xHxW
+    torch::Tensor lapK = torch::tensor({{{{0,1,0},{1,-4,1},{0,1,0}}}}, torch::kFloat32).to(gray.device());
+    torch::Tensor lap = conv2dSingle(gray, lapK);
+    return lap.var().item<float>();
+}
+
+static float tenengradMetric(const torch::Tensor& rgb){
+    torch::Tensor gray = 0.299f * rgb.index({Slice(), Slice(), 0}) +
+                         0.587f * rgb.index({Slice(), Slice(), 1}) +
+                         0.114f * rgb.index({Slice(), Slice(), 2});
+    gray = gray.unsqueeze(0).unsqueeze(0);
+    torch::Tensor sobelX = torch::tensor({{{{-1,0,1},{-2,0,2},{-1,0,1}}}}, torch::kFloat32).to(gray.device());
+    torch::Tensor sobelY = torch::tensor({{{{1,2,1},{0,0,0},{-1,-2,-1}}}}, torch::kFloat32).to(gray.device());
+    torch::Tensor gx = conv2dSingle(gray, sobelX);
+    torch::Tensor gy = conv2dSingle(gray, sobelY);
+    torch::Tensor g2 = gx.pow(2) + gy.pow(2);
+    return g2.mean().item<float>();
 }
 
 EvalSnapshot evaluate(Model& model,
@@ -81,8 +116,10 @@ EvalSnapshot evaluate(Model& model,
         float l1v = l1(rgb, gt).item<float>();
         float ssimV = model.ssim.eval(rgb, gt).item<float>();
         float mLoss = model.mainLoss(rgb, gt, ssimWeight).item<float>();
+        float vLap = varLaplacian(rgb.detach().cpu());
+        float tng  = tenengradMetric(rgb.detach().cpu());
 
-        accumulate(snap.train, p, ssimV, l1v, mLoss);
+        accumulate(snap.train, p, ssimV, l1v, mLoss, vLap, tng);
     }
     finalize(snap.train, subsetSize);
 
@@ -95,8 +132,10 @@ EvalSnapshot evaluate(Model& model,
         float l1v = l1(rgb, gt).item<float>();
         float ssimV = model.ssim.eval(rgb, gt).item<float>();
         float mLoss = model.mainLoss(rgb, gt, ssimWeight).item<float>();
+        float vLap = varLaplacian(rgb.detach().cpu());
+        float tng  = tenengradMetric(rgb.detach().cpu());
 
-        accumulate(snap.test, p, ssimV, l1v, mLoss);
+        accumulate(snap.test, p, ssimV, l1v, mLoss, vLap, tng);
     }
     finalize(snap.test, test.size());
 
@@ -125,6 +164,8 @@ void saveEval(const std::vector<EvalSnapshot>& snapshots,
             jg["ssim"] = g.meanSSIM;
             jg["l1"]   = g.meanL1;
             jg["mainLoss"] = g.mainLoss;
+            jg["varLaplacian"] = g.meanVarLap;
+            jg["tenengrad"]   = g.meanTenengrad;
             return jg;
         };
 
