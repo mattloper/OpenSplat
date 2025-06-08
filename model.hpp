@@ -26,13 +26,15 @@ struct Model{
         int numDownscales, int resolutionSchedule, int shDegree, int shDegreeInterval, 
         int refineEvery, int warmupLength, int resetAlphaEvery, float densifyGradThresh, float densifySizeThresh, int stopScreenSizeAt, float splitScreenSize,
         int maxSteps, bool keepCrs, bool enableColorCal,
+        int ignoreSaturatedAfter, float saturationThreshold,
         const torch::Device &device) :
     numCameras(numCameras),
     enableColorCal(enableColorCal),
     numDownscales(numDownscales), resolutionSchedule(resolutionSchedule), shDegree(shDegree), shDegreeInterval(shDegreeInterval), 
     refineEvery(refineEvery), warmupLength(warmupLength), resetAlphaEvery(resetAlphaEvery), stopSplitAt(maxSteps / 2), densifyGradThresh(densifyGradThresh), densifySizeThresh(densifySizeThresh), stopScreenSizeAt(stopScreenSizeAt), splitScreenSize(splitScreenSize),
     maxSteps(maxSteps), keepCrs(keepCrs),
-    device(device), ssim(11, 3){
+    device(device), ssim(11, 3),
+    ignoreSaturatedAfter(ignoreSaturatedAfter), saturationThreshold(saturationThreshold){
 
     long long numPoints = inputData.points.xyz.size(0);
     scale = inputData.scale;
@@ -87,7 +89,7 @@ struct Model{
   void saveSplat(const std::string &filename);
   void saveDebugPly(const std::string &filename, int step);
   int loadPly(const std::string &filename);
-  torch::Tensor mainLoss(torch::Tensor &rgb, torch::Tensor &gt, float ssimWeight);
+  torch::Tensor mainLoss(torch::Tensor &rgb, torch::Tensor &gt, size_t step, float ssimWeight);
 
   void addToOptimizer(torch::optim::Adam *optimizer, const torch::Tensor &newParam, const torch::Tensor &idcs, int nSamples);
   void removeFromOptimizer(torch::optim::Adam *optimizer, const torch::Tensor &newParam, const torch::Tensor &deletedMask);
@@ -145,6 +147,9 @@ struct Model{
   torch::Tensor colorCorrections;
   std::unordered_map<std::string,int> cameraPathToIndex;
   torch::optim::Adam *colorCorrectionsOpt = nullptr;
+
+  int ignoreSaturatedAfter;
+  float saturationThreshold;
 };
 
 

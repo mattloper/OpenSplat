@@ -35,6 +35,8 @@ int main(int argc, char *argv[]){
         ("sh-degree", "Maximum spherical harmonics degree (0-4)", cxxopts::value<int>()->default_value("3"))
         ("sh-degree-interval", "Increase the number of spherical harmonics degree after these many steps (will not exceed [sh-degree])", cxxopts::value<int>()->default_value("1000"))
         ("ssim-weight", "Weight to apply to the structural similarity loss. Set to zero to use least absolute deviation (L1) loss only", cxxopts::value<float>()->default_value("0.2"))
+        ("ignore-saturated-after", "Iteration after which saturated pixels are ignored (-1 = never)", cxxopts::value<int>()->default_value("-1"))
+        ("saturation-threshold", "Pixel value regarded as fully saturated", cxxopts::value<float>()->default_value("1.0"))
         ("refine-every", "Split/duplicate/prune gaussians every these many steps", cxxopts::value<int>()->default_value("100"))
         ("warmup-length", "Split/duplicate/prune gaussians only after these many steps", cxxopts::value<int>()->default_value("500"))
         ("reset-alpha-every", "Reset the opacity values of gaussians after these many refinements (not steps)", cxxopts::value<int>()->default_value("30"))
@@ -92,6 +94,8 @@ int main(int argc, char *argv[]){
     }
     const int shDegreeInterval = result["sh-degree-interval"].as<int>();
     const float ssimWeight = result["ssim-weight"].as<float>();
+    const int ignoreSaturatedAfter = result["ignore-saturated-after"].as<int>();
+    const float saturationThreshold = result["saturation-threshold"].as<float>();
     const int refineEvery = result["refine-every"].as<int>();
     const int warmupLength = result["warmup-length"].as<int>();
     const int resetAlphaEvery = result["reset-alpha-every"].as<int>();
@@ -141,6 +145,7 @@ int main(int argc, char *argv[]){
                     numDownscales, resolutionSchedule, shDegree, shDegreeInterval, 
                     refineEvery, warmupLength, resetAlphaEvery, densifyGradThresh, densifySizeThresh, stopScreenSizeAt, splitScreenSize,
                     numIters, keepCrs, colorcal,
+                    ignoreSaturatedAfter, saturationThreshold,
                     device);
 
         std::vector< size_t > camIndices( cams.size() );
@@ -177,7 +182,7 @@ int main(int argc, char *argv[]){
             torch::Tensor gt = cam.getImage(model.getDownscaleFactor(step));
             gt = gt.to(device);
 
-            torch::Tensor mainLoss = model.mainLoss(rgb, gt, ssimWeight);
+            torch::Tensor mainLoss = model.mainLoss(rgb, gt, step, ssimWeight);
             mainLoss.backward();
             
             if (step % displayStep == 0) {

@@ -118,7 +118,7 @@ EvalSnapshot evaluate(Model& model,
         float p  = psnr(rgb, gt).item<float>();
         float l1v = l1(rgb, gt).item<float>();
         float ssimV = model.ssim.eval(rgb, gt).item<float>();
-        float mLoss = model.mainLoss(rgb, gt, ssimWeight).item<float>();
+        float mLoss = model.mainLoss(rgb, gt, iter, ssimWeight).item<float>();
         float vLap = varLaplacian(rgb.detach().cpu());
         float tng  = tenengradMetric(rgb.detach().cpu());
 
@@ -134,7 +134,7 @@ EvalSnapshot evaluate(Model& model,
         float p  = psnr(rgb, gt).item<float>();
         float l1v = l1(rgb, gt).item<float>();
         float ssimV = model.ssim.eval(rgb, gt).item<float>();
-        float mLoss = model.mainLoss(rgb, gt, ssimWeight).item<float>();
+        float mLoss = model.mainLoss(rgb, gt, iter, ssimWeight).item<float>();
         float vLap = varLaplacian(rgb.detach().cpu());
         float tng  = tenengradMetric(rgb.detach().cpu());
 

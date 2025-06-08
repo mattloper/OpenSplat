@@ -787,9 +787,23 @@ int Model::loadPly(const std::string &filename){
     throw std::runtime_error("Invalid PLY file");
 }
 
-torch::Tensor Model::mainLoss(torch::Tensor &rgb, torch::Tensor &gt, float ssimWeight){
-    torch::Tensor ssimLoss = 1.0f - ssim.eval(rgb, gt);
-    torch::Tensor l1Loss = l1(rgb, gt);
+torch::Tensor Model::mainLoss(torch::Tensor &rgb, torch::Tensor &gt, size_t step, float ssimWeight){
+    // Before masking phase: original loss
+    if (ignoreSaturatedAfter < 0 || static_cast<int>(step) < ignoreSaturatedAfter){
+        torch::Tensor ssimLoss = 1.0f - ssim.eval(rgb, gt);
+        torch::Tensor l1Loss   = torch::abs(rgb - gt).mean();
+        return (1.0f - ssimWeight) * l1Loss + ssimWeight * ssimLoss;
+    }
+
+    // Build saturation mask (H x W), 1 = keep
+    torch::Tensor mask = (gt < saturationThreshold - 1e-6f).all(-1).to(rgb.dtype());
+
+    // Divide by valid pixels * channels to match original mean()
+    torch::Tensor validCount = mask.sum().clamp_min(1.0f) * static_cast<float>(rgb.size(-1));
+    torch::Tensor l1Loss = ((rgb - gt).abs() * mask.unsqueeze(-1)).sum() / validCount;
+
+    torch::Tensor ssimLoss = 1.0f - ssim.eval(rgb, gt); // Unmasked SSIM
+
     return (1.0f - ssimWeight) * l1Loss + ssimWeight * ssimLoss;
 }
 
