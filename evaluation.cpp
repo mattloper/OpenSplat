@@ -68,7 +68,8 @@ static float varLaplacian(const torch::Tensor& rgb){
     gray = gray.unsqueeze(0).unsqueeze(0); // 1x1xHxW
     torch::Tensor lapK = torch::tensor({{{{0,1,0},{1,-4,1},{0,1,0}}}}, torch::kFloat32).to(gray.device());
     torch::Tensor lap = conv2dSingle(gray, lapK);
-    return lap.var().item<float>();
+    constexpr float SCALE = 255.0f * 255.0f; // adjust to 0–255 domain
+    return lap.var().item<float>() * SCALE;
 }
 
 static float tenengradMetric(const torch::Tensor& rgb){
@@ -81,7 +82,8 @@ static float tenengradMetric(const torch::Tensor& rgb){
     torch::Tensor gx = conv2dSingle(gray, sobelX);
     torch::Tensor gy = conv2dSingle(gray, sobelY);
     torch::Tensor g2 = gx.pow(2) + gy.pow(2);
-    return g2.mean().item<float>();
+    constexpr float SCALE = 255.0f * 255.0f; // adjust to 0–255 domain
+    return g2.mean().item<float>() * SCALE;
 }
 
 EvalSnapshot evaluate(Model& model,
