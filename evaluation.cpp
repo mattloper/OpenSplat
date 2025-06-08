@@ -57,7 +57,8 @@ static void finalize(EvalGroup& grp, size_t count){
 // Helper kernels for focus metrics
 static torch::Tensor conv2dSingle(const torch::Tensor& img, const torch::Tensor& kernel){
     using namespace torch::nn::functional;
-    return conv2d(img, kernel, Conv2dFuncOptions().padding(1));
+    auto padded = pad(img, PadFuncOptions({1,1,1,1}).mode(torch::kReflect));
+    return conv2d(padded, kernel, Conv2dFuncOptions());
 }
 
 static float varLaplacian(const torch::Tensor& rgb){
