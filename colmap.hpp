@@ -5,7 +5,15 @@
 #include "input_data.hpp"
 
 namespace cm{
-    InputData inputDataFromColmap(const std::string &projectRoot, const std::string& colmapImageSourcePath = "");
+    // Back-compat 2-argument version (kept for legacy code)
+    InputData inputDataFromColmap(const std::string &projectRoot,
+                                  const std::string &colmapImageSourcePath = "");
+
+    // New extended version that allows overriding normalization.
+    InputData inputDataFromColmap(const std::string &projectRoot,
+                                  const std::string &colmapImageSourcePath,
+                                  const std::vector<float> &overrideTranslation,
+                                  float overrideScale = -1.0f);
 
     enum CameraModel{
         SimplePinhole = 0, Pinhole, SimpleRadial, Radial,
