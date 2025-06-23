@@ -46,6 +46,8 @@ int main(int argc, char *argv[]){
         ("split-screen-size", "Split gaussians that are larger than this percentage of screen space", cxxopts::value<float>()->default_value("0.05"))
         ("colmap-image-path", "Override the default image path for COLMAP-based input", cxxopts::value<std::string>()->default_value(""))
         ("colorcal", "Enable per-camera colour calibration")
+        ("norm-translation", "Override normalization translation as x,y,z (comma-separated)", cxxopts::value<std::string>()->default_value(""))
+        ("norm-scale", "Override normalization scale factor (positive float)", cxxopts::value<float>()->default_value("-1"))
 
         ("h,help", "Print usage")
         ("version", "Print version")
@@ -106,6 +108,27 @@ int main(int argc, char *argv[]){
     const std::string colmapImageSourcePath = result["colmap-image-path"].as<std::string>();
     const bool colorcal = result.count("colorcal") > 0;
 
+    // Parse normalization override
+    std::vector<float> normTranslation;
+    float normScale = result["norm-scale"].as<float>();
+    std::string normTrStr = result["norm-translation"].as<std::string>();
+    if (!normTrStr.empty()){
+        std::stringstream ss(normTrStr);
+        std::string item; float val;
+        while (std::getline(ss, item, ',')){
+            try{ val = std::stof(item); } catch(const std::exception &){ val = NAN; }
+            normTranslation.push_back(val);
+        }
+        if (normTranslation.size() != 3) {
+            std::cerr << "Error: --norm-translation must have exactly three comma-separated floats (x,y,z)" << std::endl;
+            return EXIT_FAILURE;
+        }
+        if (normScale <= 0.0f){
+            std::cerr << "Error: --norm-scale must be > 0 when --norm-translation is provided" << std::endl;
+            return EXIT_FAILURE;
+        }
+    }
+
     torch::Device device = torch::kCPU;
     int displayStep = 10;
 
@@ -126,7 +149,7 @@ int main(int argc, char *argv[]){
 #endif
 
     try{
-        InputData inputData = inputDataFromX(projectRoot, colmapImageSourcePath);
+        InputData inputData = inputDataFromX(projectRoot, colmapImageSourcePath, normTranslation, normScale);
 
         parallel_for(inputData.cameras.begin(), inputData.cameras.end(), [&downScaleFactor](Camera &cam){
             cam.loadImage(downScaleFactor);
