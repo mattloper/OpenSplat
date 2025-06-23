@@ -305,10 +305,9 @@ InputData inputDataFromOpenMVG(const std::string &projectRoot){
 
     std::cout << "  " << std::endl;
 
-    auto r = autoScaleAndCenterPoses(unorientedPoses);
-    torch::Tensor tposes = std::get<0>(r);
-    ret.translation = std::get<1>(r);
-    ret.scale = std::get<2>(r);
+    torch::Tensor poses_tensor = unorientedPoses;
+    ret.translation = torch::zeros({3});
+    ret.scale = 1.0f;
 
     for (const auto &item : views){
         std::uint32_t view_id = item.first;
@@ -333,14 +332,14 @@ InputData inputDataFromOpenMVG(const std::string &projectRoot){
                             static_cast<float>(intrinsic.k1), static_cast<float>(intrinsic.k2), static_cast<float>(intrinsic.k3), 
                             static_cast<float>(intrinsic.t1), static_cast<float>(intrinsic.t2),  
                             
-                            tposes[current_pose], image_path.string()));
+                            poses_tensor[current_pose], image_path.string()));
     }
 
     PointSet *pSet = readPointSet(colorPointCloud.string());
 
     torch::Tensor points = pSet->pointsTensor().clone();
     
-    ret.points.xyz = (points - ret.translation) * ret.scale;
+    ret.points.xyz = points;
     ret.points.rgb = pSet->colorsTensor().clone();
 
     RELEASE_POINTSET(pSet);

@@ -405,8 +405,6 @@ int main(int argc, char *argv[]) {
         ("view-colmap", "Path to the COLMAP directory providing camera viewpoints for rendering (colmap_B). If omitted, splat-colmap is used.", cxxopts::value<std::string>()->default_value(""))
         ("o,output-dir", "Path to the directory where rendered images will be saved", cxxopts::value<std::string>())
         ("device", "Computation device (cpu, cuda, mps). Defaults to best available.", cxxopts::value<std::string>()->default_value(""))
-        ("norm-translation", "Override normalization translation as x,y,z (comma-separated)", cxxopts::value<std::string>()->default_value(""))
-        ("norm-scale", "Override normalization scale factor (positive float)", cxxopts::value<float>()->default_value("-1"))
         ("h,help", "Print usage");
 
     cxxopts::ParseResult result;
@@ -436,27 +434,6 @@ int main(int argc, char *argv[]) {
     const std::string output_dir_path = result["output-dir"].as<std::string>();
     const std::string fgmask_cli_path = "";
     std::string device_str = result["device"].as<std::string>();
-
-    // Parse normalization override
-    std::vector<float> normTranslation;
-    float normScale = result["norm-scale"].as<float>();
-    std::string normTrStr = result["norm-translation"].as<std::string>();
-    if (!normTrStr.empty()){
-        std::stringstream ss(normTrStr);
-        std::string item; float val;
-        while (std::getline(ss, item, ',')){
-            try{ val = std::stof(item); } catch(const std::exception &){ val = NAN; }
-            normTranslation.push_back(val);
-        }
-        if (normTranslation.size() != 3) {
-            std::cerr << "Error: --norm-translation must have exactly three comma-separated floats (x,y,z)" << std::endl;
-            return EXIT_FAILURE;
-        }
-        if (normScale <= 0.0f){
-            std::cerr << "Error: --norm-scale must be > 0 when --norm-translation is provided" << std::endl;
-            return EXIT_FAILURE;
-        }
-    }
 
     if (view_colmap_path.empty()) {
         view_colmap_path = splat_colmap_path;
@@ -513,7 +490,7 @@ int main(int argc, char *argv[]) {
         // Note: load_splat_data_from_ply will throw if the PLY is not as expected.
 
         std::cout << "\nStep 2: Loading Splat COLMAP data (colmap_A)..." << std::endl;
-        InputData input_data_a = cm::inputDataFromColmap(splat_colmap_path, "", normTranslation, normScale);
+        InputData input_data_a = cm::inputDataFromColmap(splat_colmap_path, "");
         const std::vector<Camera>& cameras_a = input_data_a.cameras;
         std::cout << "Loaded " << cameras_a.size() << " cameras from " << splat_colmap_path << std::endl;
         std::cout << "Normalization (A) translation=" << input_data_a.translation << ", scale=" << input_data_a.scale << std::endl;
@@ -528,7 +505,7 @@ int main(int argc, char *argv[]) {
             cameras_b_ptr = &cameras_a;
             std::cout << "Using cameras from colmap_A for colmap_B (paths are identical)." << std::endl;
         } else {
-            input_data_b = cm::inputDataFromColmap(view_colmap_path, "", normTranslation, normScale);
+            input_data_b = cm::inputDataFromColmap(view_colmap_path, "");
             cameras_b_ptr = &input_data_b.cameras;
             std::cout << "Loaded " << cameras_b_ptr->size() << " cameras from " << view_colmap_path << std::endl;
             std::cout << "Normalization (B) translation=" << input_data_b.translation << ", scale=" << input_data_b.scale << std::endl;

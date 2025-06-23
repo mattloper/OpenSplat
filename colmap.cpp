@@ -11,12 +11,6 @@ using namespace torch::indexing;
 
 namespace cm{
 
-// Legacy 2-arg wrapper that forwards to extended version with no overrides
-InputData inputDataFromColmap(const std::string &projectRoot,
-                              const std::string &colmapImageSourcePath){
-    return inputDataFromColmap(projectRoot, colmapImageSourcePath, {}, -1.0f);
-}
-
 static fs::path findColmapRoot(const fs::path &projectRoot){
     // Priority 1: cameras.bin in project root
     if (fs::exists(projectRoot / "cameras.bin")) return projectRoot;
@@ -50,9 +44,7 @@ static fs::path findColmapRoot(const fs::path &projectRoot){
 }
 
 InputData inputDataFromColmap(const std::string &projectRoot,
-                              const std::string &colmapImageSourcePath,
-                              const std::vector<float> &overrideTranslation,
-                              float overrideScale){
+                              const std::string &colmapImageSourcePath){
     InputData ret;
     fs::path cmRoot = findColmapRoot(projectRoot);
 
@@ -176,28 +168,9 @@ InputData inputDataFromColmap(const std::string &projectRoot,
 
     imgf.close();
 
-    torch::Tensor poses;
-    if (overrideTranslation.size() == 3 && overrideScale > 0.0f){
-        // Use user-supplied normalization
-        torch::Tensor translationT = torch::tensor({overrideTranslation[0], overrideTranslation[1], overrideTranslation[2]}, torch::kFloat32);
-        float scaleF = overrideScale;
-
-        // Apply to camera origins
-        torch::Tensor origins = unorientedPoses.index({"...", Slice(None,3), 3});
-        origins = (origins - translationT) * scaleF;
-
-        poses = unorientedPoses.clone();
-        poses.index_put_({"...", Slice(None,3), 3}, origins);
-
-        ret.translation = translationT;
-        ret.scale = scaleF;
-    }else{
-        // Fall back to automatic centering/scaling
-        auto r = autoScaleAndCenterPoses(unorientedPoses);
-        poses = std::get<0>(r);
-        ret.translation = std::get<1>(r);
-        ret.scale = std::get<2>(r);
-    }
+    torch::Tensor poses = unorientedPoses;
+    ret.translation = torch::zeros({3});
+    ret.scale = 1.0f;
 
     // Log chosen normalization
     std::cout << "[COLMAP] Applied normalization – translation: " << ret.translation << ", scale: " << ret.scale << std::endl;
@@ -209,7 +182,7 @@ InputData inputDataFromColmap(const std::string &projectRoot,
     PointSet *pSet = readPointSet(pointsPath.string());
     torch::Tensor points = pSet->pointsTensor().clone();
 
-    ret.points.xyz = (points - ret.translation) * ret.scale;
+    ret.points.xyz = points;
     ret.points.rgb = pSet->colorsTensor().clone();
 
     RELEASE_POINTSET(pSet);

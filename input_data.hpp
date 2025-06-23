@@ -66,6 +66,6 @@ struct InputData{
 };
 
 // The colmapImageSourcePath is only used in Colmap. In other methods, this path is ignored.
-InputData inputDataFromX(const std::string& projectRoot, const std::string& colmapImageSourcePath = "", const std::vector<float>& normTranslation = {}, float normScale = -1.0f);
+InputData inputDataFromX(const std::string& projectRoot, const std::string& colmapImageSourcePath = "");
 
 #endif

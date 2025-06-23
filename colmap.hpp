@@ -9,12 +9,6 @@ namespace cm{
     InputData inputDataFromColmap(const std::string &projectRoot,
                                   const std::string &colmapImageSourcePath = "");
 
-    // New extended version that allows overriding normalization.
-    InputData inputDataFromColmap(const std::string &projectRoot,
-                                  const std::string &colmapImageSourcePath,
-                                  const std::vector<float> &overrideTranslation,
-                                  float overrideScale = -1.0f);
-
     enum CameraModel{
         SimplePinhole = 0, Pinhole, SimpleRadial, Radial,
         OpenCV, OpenCVFisheye, FullOpenCV, FOV, 

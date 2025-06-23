@@ -137,10 +137,9 @@ InputData inputDataFromNerfStudio(const std::string &projectRoot){
 
     torch::Tensor unorientedPoses = posesFromTransforms(t);
 
-    auto r = autoScaleAndCenterPoses(unorientedPoses);
-    torch::Tensor poses = std::get<0>(r);
-    ret.translation = std::get<1>(r);
-    ret.scale = std::get<2>(r);
+    torch::Tensor poses = unorientedPoses;
+    ret.translation = torch::zeros({3});
+    ret.scale = 1.0f;
 
     // aabbScale = [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]
 
@@ -158,7 +157,7 @@ InputData inputDataFromNerfStudio(const std::string &projectRoot){
 
     torch::Tensor points = pSet->pointsTensor().clone();
     
-    ret.points.xyz = (points - ret.translation) * ret.scale;
+    ret.points.xyz = points;
     ret.points.rgb = pSet->colorsTensor().clone();
 
     RELEASE_POINTSET(pSet);
