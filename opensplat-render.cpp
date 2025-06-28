@@ -37,6 +37,8 @@
 // or ensure they are consistently included.
 #include <torch/torch.h>
 #include <opencv2/opencv.hpp> // For cv::Mat, cv::imwrite, cv::cvtColor
+#include <atomic>
+#include <thread>
 
 namespace fs = std::filesystem;
 using namespace torch::indexing;
@@ -405,6 +407,7 @@ int main(int argc, char *argv[]) {
         ("view-colmap", "Path to the COLMAP directory providing camera viewpoints for rendering (colmap_B). If omitted, splat-colmap is used.", cxxopts::value<std::string>()->default_value(""))
         ("o,output-dir", "Path to the directory where rendered images will be saved", cxxopts::value<std::string>())
         ("device", "Computation device (cpu, cuda, mps). Defaults to best available.", cxxopts::value<std::string>()->default_value(""))
+        ("threads", "Number of CPU threads to use for rendering", cxxopts::value<int>()->default_value("8"))
         ("h,help", "Print usage");
 
     cxxopts::ParseResult result;
@@ -434,6 +437,11 @@ int main(int argc, char *argv[]) {
     const std::string output_dir_path = result["output-dir"].as<std::string>();
     const std::string fgmask_cli_path = "";
     std::string device_str = result["device"].as<std::string>();
+    int num_threads = result["threads"].as<int>();
+    if (num_threads <= 0) {
+        std::cerr << "Warning: --threads must be positive. Defaulting to 8." << std::endl;
+        num_threads = 8;
+    }
 
     if (view_colmap_path.empty()) {
         view_colmap_path = splat_colmap_path;
@@ -458,6 +466,7 @@ int main(int argc, char *argv[]) {
         }
     }
     std::cout << "Using device: " << device << std::endl;
+    std::cout << "Threads:          " << num_threads << std::endl;
 
 
     // Create output directory if it doesn't exist
@@ -539,52 +548,91 @@ int main(int argc, char *argv[]) {
         std::cout << "\\nStep 5: Rendering...\\" << std::endl;
         torch::Tensor background_color = torch::tensor({0.0f, 0.0f, 0.0f}, torch::TensorOptions().device(device).dtype(torch::kFloat32));
 
-        int rendered_count = 0;
-        for (const auto& cam_b_original : cameras_b) {
-            torch::Tensor original_cam_b_pose = cam_b_original.camToWorld.to(device); 
-            torch::Tensor final_render_pose;
+        std::atomic<int> rendered_count{0};
+        std::mutex io_mutex;
+        const size_t total_cams = cameras_b.size();
 
-            if (splat_colmap_path == view_colmap_path) {
-                final_render_pose = original_cam_b_pose;
-                // std::cout << "Using original pose for rendering as splat and view colmaps are the same." << std::endl;
-            } else {
-                final_render_pose = torch::matmul(transform_b_to_a_matrix, original_cam_b_pose);
-                // std::cout << "Using transformed pose for rendering." << std::endl;
-            }
-            
-            Camera render_cam = cam_b_original; 
-            render_cam.camToWorld = final_render_pose; 
+        // ------------------------------------------------------------------
+        // Multithreading strategy
+        // ------------------------------------------------------------------
+        // We spawn 'num_threads' worker threads.  An atomic counter 'next_idx'
+        // hands out the next camera index to render.  Each worker loops until
+        // the counter exceeds 'total_cams', then exits.  This tiny work-stealing
+        // pool keeps the code self-contained (no OpenMP / external pools) yet
+        // fully utilises the CPU cores.
+        //
+        // Only stdout and disk I/O (cv::imwrite) touch shared state; they are
+        // protected with the single mutex 'io_mutex'.  All tensors and camera
+        // structs are read-only inside the workers so they need no locking.
+        // ------------------------------------------------------------------
+
+        auto render_one_index = [&](size_t idx) {
+            const Camera &cam_b_original = cameras_b[idx];
+
+            torch::Tensor original_cam_b_pose = cam_b_original.camToWorld.to(device);
+            torch::Tensor final_render_pose = (splat_colmap_path == view_colmap_path)
+                                                ? original_cam_b_pose
+                                                : torch::matmul(transform_b_to_a_matrix, original_cam_b_pose);
+
+            Camera render_cam = cam_b_original;
+            render_cam.camToWorld = final_render_pose;
 
             std::string image_filename = fs::path(render_cam.filePath).filename().string();
-            std::cout << "Rendering image for: " << image_filename << " (H:" << render_cam.height << ", W:" << render_cam.width << ")" << std::endl;
-            
+            {
+                std::lock_guard<std::mutex> lock(io_mutex);
+                std::cout << "Rendering image for: " << image_filename << " (H:" << render_cam.height << ", W:" << render_cam.width << ")" << std::endl;
+            }
+
             torch::Tensor rendered_image_tensor = render_one_image(splat_data, render_cam, device, background_color);
 
-            // Flip the background image vertically before compositing
-            rendered_image_tensor = torch::flip(rendered_image_tensor, {0});
-            
-            // Also flip horizontally to match original orientation
-            rendered_image_tensor = torch::flip(rendered_image_tensor, {1});
+            // Flip vertically and horizontally to match original orientation
+            rendered_image_tensor = torch::flip(rendered_image_tensor, {0, 1});
 
             cv::Mat image_to_save = tensorToImage(rendered_image_tensor.contiguous().cpu());
 
-            // OpenCV expects BGR format for saving images with imwrite, but our tensor has RGB
-            // We need to convert from RGB to BGR before saving
             if (image_to_save.channels() == 3) {
                 cv::cvtColor(image_to_save, image_to_save, cv::COLOR_RGB2BGR);
             }
-            
-            fs::path output_image_path = fs::path(output_dir_path) / (fs::path(image_filename).stem().string() + ".png"); // Save as PNG
-            std::cout << "Saving to: " << output_image_path << std::endl; // Debug: show save path
 
-            // Use standard imwrite to save the BGR image
-            if (!cv::imwrite(output_image_path.string(), image_to_save)) {
-                std::cerr << "Failed to save rendered image to: " << output_image_path << std::endl;
-            } else {
-                rendered_count++;
+            fs::path output_image_path = fs::path(output_dir_path) / (fs::path(image_filename).stem().string() + ".png");
+            bool save_ok = false;
+            {
+                std::lock_guard<std::mutex> lock(io_mutex);
+                save_ok = cv::imwrite(output_image_path.string(), image_to_save);
+                if (!save_ok) {
+                    std::cerr << "Failed to save rendered image to: " << output_image_path << std::endl;
+                }
             }
+            if (save_ok) {
+                rendered_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        };
+
+        // Atomic counter that gives each worker its next job.
+        std::atomic<size_t> next_idx{0};
+        auto worker = [&]() {
+            while (true) {
+                // fetch_add returns the previous value; stop when we run out
+                size_t idx = next_idx.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= total_cams) break;
+                render_one_index(idx);
+            }
+        };
+
+        std::vector<std::thread> pool;
+
+        // --------------------------------------------------------------
+        // Spawn the worker threads.  Each iteration of this loop starts
+        // a new OS thread that begins executing the 'worker' lambda.
+        // --------------------------------------------------------------
+        for (int t = 0; t < num_threads; ++t) {
+            pool.emplace_back(worker); // <-- Thread is created here
         }
-        std::cout << "\nSuccessfully rendered and saved " << rendered_count << " images out of " << cameras_b.size() << "." << std::endl;
+        for (auto &th : pool) {
+            th.join();
+        }
+
+        std::cout << "\nSuccessfully rendered and saved " << rendered_count.load() << " images out of " << cameras_b.size() << "." << std::endl;
         std::cout << "opensplat-render finished successfully." << std::endl;
 
     } catch (const std::exception& e) {
